@@ -313,7 +313,7 @@ namespace agrigate
 		int nLastYear = 0;
 		for (ImageMeta sMeta : m_listMetadata)
 		{
-			if (sMeta.nYear == nLastYear) continue;
+			if (sMeta.nYear==2013 || sMeta.nYear == nLastYear) continue;
 			else if (m_mapMODISMax[sMeta.nYear].second < 0.5) continue;
 			else if (sMeta.nDOY>m_mapMODISMax[sMeta.nYear].first) continue;
 			else
@@ -326,7 +326,7 @@ namespace agrigate
 		return listBestImages;
 	}
 
-	bool ParseDateString(string strDate, int* pnYear, int* pnMonth, int* pnDay, int* pnDOY)
+	bool NDVIProfile::ParseDateString(string strDate, int* pnYear, int* pnMonth, int* pnDay, int* pnDOY)
 	{
 		regex regYYYYMMDD("\\d{7}");
 		regex regYYYY_MM_DD("\\d{4}\\.\\d{2}\\.\\d{2}");
@@ -408,12 +408,13 @@ namespace agrigate
 
 			int nYear = atoi(strLine.substr(0,strLine.find(";")).c_str());
 			strLine = strLine.substr(strLine.find(";") + 1);
-			double dblMax = atof(strLine.substr(0, strLine.find(";")).c_str());
+			double dblMax = atof(strLine.substr(0, strLine.find(";")).replace(1,1,".").c_str());
 			strLine = strLine.substr(strLine.find(";") + 1);
-			if (!NDVIProfile::ParseDateString(strLine.substr(0, strLine.find(";")), &nYear, &nMonth, &nDay, &nDOY))
+			if (!NDVIProfile::ParseDateString(strLine.substr(0, 10), &nYear, &nMonth, &nDay, &nDOY))
 			{
 				m_listMetadata.clear();
 				m_mapMODISMax.clear();
+				return false;
 			}
 			m_mapMODISMax[nYear] = pair<int,double>(nDOY,dblMax);
 		}

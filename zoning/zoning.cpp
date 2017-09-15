@@ -34,6 +34,22 @@ code:
 
 */
 
+int nDescriptors = 5;
+const GMXOptionDescriptor asDescriptors[] =
+{
+	{ "-mean", 0, 0, "input mean csv" },
+	{ "-max", 0, 0, "input max csv" },
+	{ "-v", 0, 0, "input geojson" },
+	{ "-o_png", 0, 0, "output png" },
+	{ "-o_csv", 0, 0, "output csv file" }
+};
+
+int nExamples = 1;
+const string astrUsageExamples[] =
+{
+	"zoning -mean mean.csv -max max.csv -v border.geojson -o_png zones.png -o_csv sceneid_list.csv",
+};
+
 #ifdef WIN32
 int _tmain(int nArgs, wchar_t *pastrArgsW[])
 {
@@ -59,6 +75,27 @@ int main(int nArgs, char* argv[])
 
 	cout << endl;
 
+	if (nArgs == 1)
+	{
+		cout << "version: " << GMXFileSys::ReadTextFile(GMXFileSys::GetAbsolutePath(
+			GMXFileSys::GetPath(pastrArgs[0]),
+			"version.txt")
+			) << endl;
+		cout << "build date: " << __DATE__ << endl;
+		GMXOptionParser::PrintUsage(asDescriptors, nDescriptors, astrUsageExamples, nExamples);
+		delete[]pastrArgs;
+		return 0;
+	}
+
+	GMXOptionParser oOptionParser;
+	if (!oOptionParser.Init(asDescriptors, nDescriptors, pastrArgs, nArgs))
+	{
+		cout << "ERROR: input cmd line is not valid" << endl;
+		delete[]pastrArgs;
+		return 2;
+	}
+	delete[]pastrArgs;
+
 	//экстрополяция до границ ?
 	//отбор снимков
 	//края в MajorituFilter - заполнение пустот
@@ -68,13 +105,32 @@ int main(int nArgs, char* argv[])
 	//string strMaxCSV = "F:\\mpotanin\\FieldStats\\test\\max.csv";
 	//agrigate::NDVIProfile oNP;
 	//bool bResult = oNP.ParseInputData(strMeanCSV, strMaxCSV);
-	list<string> listContainers;
 	/////////////////////////////////////////////////////////////////////////////
+	/*
 	string strVectorBorder = "F:\\mpotanin\\FieldStats\\test\\357457.geojson";
 	listContainers.push_back("\\\\tinkerbell-smb\\ifs\\kosmosnimki\\Operative\\alt_proc\\ls8\\ndvi\\2015\\2015-06-10\\LC81720282015161LGN00_ndvi.tiles");
 	listContainers.push_back("\\\\tinkerbell-smb\\ifs\\kosmosnimki\\Operative\\alt_proc\\ls8\\ndvi\\2016\\2016-04-09\\LC81720292016100LGN00_ndvi.tiles");
 	listContainers.push_back("\\\\tinkerbell-smb\\ifs\\kosmosnimki\\Operative\\alt_proc\\ls8\\ndvi\\2017\\2017-04-12\\LC81720282017102LGN00_ndvi.tiles");
 	string strOutput = "F:\\mpotanin\\FieldStats\\test\\357457_.png";
+	*/
+
+	agrigate::NDVIProfile oNDVIProfile;
+	if (!oNDVIProfile.ParseInputData(oOptionParser.GetOptionValue("-mean"),
+		oOptionParser.GetOptionValue("-max")))
+	{
+		cout << "ERROR: can't parse input mean, max csv files" <<endl;
+		return 3;
+	}
+
+	list<string> listTileContainers = oNDVIProfile.SelectInputForClassification();
+	
+	if (listTileContainers.size() == 0)
+	{
+		cout << "ERROR: no image fits criterias" << endl;
+		return 4;
+	}
+
+	
 	int nWinSize = 5;
 	int nClasses = 5;
 	int nRepeatFilter = 2;
@@ -90,13 +146,14 @@ int main(int nArgs, char* argv[])
 		poColTab->SetColorEntry(i, &arrColors[i]);
 	/////////////////////////////////////////////////////////////////////////////
 
-
-
 	Classifier oClassifier;
-	bool bResult = oClassifier.Init(listContainers, strVectorBorder);
+	if (!oClassifier.Init(listTileContainers, oOptionParser.GetOptionValue("-v")))
+	{
+		cout << "ERROR: reading input tile containers" << endl;
+		return 5;
+	}
+
 	GeoRasterBuffer* poGeoBuffer = oClassifier.ClassifySumMethod();
-	
-	///*
 	for (int i = 0; i < 2; i++)
 	{
 		Classifier::ApplyMajorityFilter((unsigned char*)poGeoBuffer->get_pixel_data_ref(),
@@ -106,9 +163,15 @@ int main(int nArgs, char* argv[])
 			nWinSize);
 	}
 	
-	//*/
 	poGeoBuffer->set_color_table(poColTab);
-	poGeoBuffer->SaveGeoRefFile(strOutput);
+	poGeoBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png"));
+
+	string strOutputText;
+	for (string strFile : listTileContainers)
+		strOutputText += strFile + "\n";
+	GMXFileSys::WriteToTextFile(oOptionParser.GetOptionValue("-o_csv"), strOutputText);
+
+	//png 32bit
 
 	delete(poGeoBuffer);
 	delete(poColTab);
