@@ -151,11 +151,32 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="classifier.h" />
+    <ClInclude Include="isoclus_v2\Image.h" />
+    <ClInclude Include="isoclus_v2\KCtree.h" />
+    <ClInclude Include="isoclus_v2\KCutil.h" />
+    <ClInclude Include="isoclus_v2\KMcenters.h" />
+    <ClInclude Include="isoclus_v2\KMdata.h" />
+    <ClInclude Include="isoclus_v2\KMeans.h" />
+    <ClInclude Include="isoclus_v2\KMfilterCenters.h" />
+    <ClInclude Include="isoclus_v2\KMrand.h" />
+    <ClInclude Include="isoclus_v2\KM_ANN.h" />
+    <ClInclude Include="isoclus_v2\Point.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="classifier.cpp" />
+    <ClCompile Include="isoclus_v2\Image.cc" />
+    <ClCompile Include="isoclus_v2\IsoClus.cc" />
+    <ClCompile Include="isoclus_v2\KCtree.cpp" />
+    <ClCompile Include="isoclus_v2\KCutil.cpp" />
+    <ClCompile Include="isoclus_v2\KMcenters.cpp" />
+    <ClCompile Include="isoclus_v2\KMdata.cpp" />
+    <ClCompile Include="isoclus_v2\KMeans.cpp" />
+    <ClCompile Include="isoclus_v2\KMfilterCenters.cpp" />
+    <ClCompile Include="isoclus_v2\KMrand.cpp" />
+    <ClCompile Include="isoclus_v2\KM_ANN.cpp" />
+    <ClCompile Include="isoclus_v2\Point.cc" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

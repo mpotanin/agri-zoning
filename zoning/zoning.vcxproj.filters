@@ -27,6 +27,36 @@
     <ClInclude Include="classifier.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="isoclus_v2\Image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KCtree.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KCutil.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KM_ANN.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KMcenters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KMdata.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KMeans.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KMfilterCenters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\KMrand.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="isoclus_v2\Point.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -36,6 +66,39 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="classifier.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\Image.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\IsoClus.cc">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KCtree.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KCutil.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KM_ANN.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KMcenters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KMdata.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KMeans.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KMfilterCenters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\KMrand.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="isoclus_v2\Point.cc">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
