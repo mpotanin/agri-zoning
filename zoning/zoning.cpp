@@ -37,30 +37,40 @@ code:
 //if -ranges == "", if o_gjson, than polygoni
 //
 //
-int nDescriptors = 12;
+int nDescriptors = 14;
 const GMXOptionDescriptor asDescriptors[] =
 {
-	{ "-mean", 0, 0, "input mean csv" },
-	{ "-max", 0, 0, "input max csv" },
+	//{ "-mean", 0, 0, "input mean csv" },
+	//{ "-max", 0, 0, "input max csv" },
 	{ "-v", 0, 0, "input geojson" },
-	{"-sid",0, 0, "sceneid list"},
+	{"-sid",0, 0, "sceneid tiles file list"},
 	{ "-o_png", 0, 0, "output png" },
 	{ "-o_tif", 0, 0, "output geotiff" },
-	{ "-o_csv", 0, 0, "output csv file" },
+	//{ "-o_csv", 0, 0, "output csv file" },
+	{"-m", 0, 0, "classify method: area, intervals (deafault area)"},
+	{"-sig",0,0, "sigma parameter for equal intervals method (default 1.6)"},
+	{"-o_geojson",0,0, "output vector zones"},
+	{"-o_geojson_srs",0,0,"0-1 output vector zones srs code, (default 0 - epsg:4326)"},
 	{ "-ncl", 0, 0, "number of classes (default 5)" },
+	{"-filt", 0, 0, "majority filter iterations (default 2)"},
+	{ "-z", 0, 0, "zoom (default = 13)" },
 	{ "-ranges", 0, 0, "intervals to split" },
 	{ "-col", 0, 1, "color table values" },
-	{"-filt", 0, 0, "majority filter iterations (default 2)"},
-	{ "-z", 0, 0, "zoom (default = 13)" }
+	{"-o_p2p",0, 0, "output vector file for pixels to polygons operation"}
 };
 
 int nExamples = 2;
 const string astrUsageExamples[] =
 {
-	"zoning -mean mean.csv -max max.csv -v border.geojson -o_png zones.png -o_csv sceneid_list.csv",
-	"zoning -sid LC81720282014078LGN00,S2A_L1C_20160619_124,LC81720282017102LGN00 -v border.geojson -o_png zones.png -o_csv sceneid_list.csv",
-	"zoning -sid LC81720282014078LGN00,S2A_L1C_20160619_124,LC81720282017102LGN00 -v border.geojson -o_tif zones.tif -ranges 0.2,0.4,0.6,0.8,1"
+	"zoning -v field.geojson -sid \"NDVI/LC81720282014078LGN00_ndvi.tiles,NDVI/S2A_L1C_20160619_124_ndvi.tiles,"
+	        "NDVI/LC81720282017102LGN00_ndvi.tiles\" -o_png zones.png -o_geojson zones.geojson -m area",
+	"zoning -v field.geojson -sid \"NDVI/LC81720282014078LGN00_ndvi.tiles,NDVI/S2A_L1C_20160619_124_ndvi.tiles,"
+			"NDVI/LC81720282017102LGN00_ndvi.tiles\" -o_png zones.png -o_geojson zones.geojson -m intervals -sig 2",
 
+	//"zoning -mean mean.csv -max max.csv -v border.geojson -o_png zones.png -o_csv sceneid_list.csv",
+	//"zoning -sid LC81720282014078LGN00,S2A_L1C_20160619_124,LC81720282017102LGN00 -v border.geojson -o_png zones.png -o_csv sceneid_list.csv",
+	//"zoning -sid LC81720282014078LGN00,S2A_L1C_20160619_124,LC81720282017102LGN00 -v border.geojson -o_tif zones.tif -ranges 0.2,0.4,0.6,0.8,1"
+	//zoning -v fields.shp -sid scene_id.csv -o_shp zones.shp -o_tif zones.tif -o_json zones.json
 	//zoning -sid LC81720282014078LGN00,S2A_L1C_20160619_124,LC81720282017102LGN00 
 	//-v border.geojson -o_tif zones.tif -ranges val1,val2,val3 -col 1 -col 2 -col 3 
 	//-filt 2
@@ -74,6 +84,8 @@ const string astrUsageExamples[] =
 #ifdef WIN32
 int _tmain(int nArgs, wchar_t *pastrArgsW[])
 {
+
+
 	string *pastrArgs = new string[nArgs];
 	for (int i = 0; i<nArgs; i++)
 	{
@@ -123,7 +135,8 @@ int main(int nArgs, char* argv[])
 	string strRealPath = "//tinkerbell-smb/ifs/kosmosnimki";
 
 	double dblPixelOfset = 2;
-	double dblSTDCoeff = 1.6;
+	double dblSTDCoeff = oOptionParser.GetOptionValue("-sig") == "" ? 1.6 :
+		atof(oOptionParser.GetOptionValue("-sig").c_str());
 	int nWinSize = 5;
 	int nClasses = oOptionParser.GetOptionValue("-ncl") == "" ? 5 : atoi(oOptionParser.GetOptionValue("-ncl").c_str());
 	int nMajorityFilterNumRun = oOptionParser.GetOptionValue("-filt") == "" ? 2 :
@@ -160,105 +173,74 @@ int main(int nArgs, char* argv[])
 			}
 		}
 	}
-	
-	
+		
 	if (listTileContainers.size() == 0)
 	{
 		cout << "ERROR: no image fits criterias" << endl;
 		return 4;
 	}
 
+	int nZoom = oOptionParser.GetOptionValue("-z") == "" ? 0 : 
+		atoi(oOptionParser.GetOptionValue("-z").c_str());
+
+	gmx::MercatorTileMatrixSet oMercTMS;
+
+
+	OGRGeometry* poVecBorder = gmx::VectorOperations::ReadAndTransformGeometry(
+		oOptionParser.GetOptionValue("-v"), oMercTMS.GetTilingSRSRef());
+
+	
+	GeoRasterBuffer* poGeoBuffer = GeoRasterBuffer::InitFromNDVITilesList(listTileContainers, 
+		poVecBorder,-1,nZoom);
+
+
+	int* panIntervals = 0;
+	ClassifiedRasterBuffer* poClassifiedBuffer =
+		GMXString::MakeLower(oOptionParser.GetOptionValue("-m")) == "intervals" ?
+		poGeoBuffer->ClassifyEqualIntervals(nClasses, panIntervals, dblSTDCoeff) :
+		poGeoBuffer->ClassifyEqualArea(nClasses, panIntervals);
 	
 
-	Classifier oClassifier;
-	if (!oClassifier.Init(listTileContainers, 
-						oOptionParser.GetOptionValue("-v"),
-						oOptionParser.GetOptionValue("-z") == "" ? 0 : atoi(oOptionParser.GetOptionValue("-z").c_str())))
+	if (poClassifiedBuffer == 0)
 	{
-		cout << "ERROR: reading input tile containers" << endl;
+		cout << "ERROR: classify error" << endl;
 		return 5;
 	}
-
+		
+	poClassifiedBuffer->ReplaceByInterpolatedValues(poVecBorder, 1, 1);
+	
+	for (int i = 0; i < nMajorityFilterNumRun; i++)
+		poClassifiedBuffer->ApplyMajorityFilter(nWinSize);
+		
 	//debug
-	oClassifier.GetGeoRasterBufferRef()->Polygonize("F:\\mpotanin\\data6\\poly_174_z12.shp");
-
-	//end-debug
-
-
-	////////////////////////////////////////////////////////////////////////////
-	/*
-	string strBasePath = "F:\\mpotanin\\FieldStats\\test";
-	string strISOCLUSParams = "F:\\mpotanin\\FieldStats\\test\\isoclus_params.txt";
-	string strISOFIle = "F:\\mpotanin\\FieldStats\\test\\330157_iso";
-	oClassifier.ClassifyISOCLUSMethod(strISOCLUSParams, strBasePath, strISOFIle);
-	*/
-	///////////////////////////////////////////////////////////////////////////
-
-	//Classifier::
-	//
-	//
-	//
-	//
-
-	GeoRasterBuffer* poClassifiedRaster = 0;
-
-	if (oOptionParser.GetOptionValue("-ranges") == "")
-	{
-		GeoRasterBuffer* poRasterizedVector = oClassifier.GetGeoRasterBufferRef()->Burn(oOptionParser.GetOptionValue("-v"),
-			dblPixelOfset);
-		poClassifiedRaster = oClassifier.ClassifySumMethod(nClasses, dblSTDCoeff, poRasterizedVector);
-	}
-	else
-	{
-		list<string> listRanges = GMXString::SplitCommaSeparatedText(oOptionParser.GetOptionValue("-ranges"));
-		int* panRanges = new int[listRanges.size()];
-		int i = 0;
-		for (string strVal : listRanges)
-		{
-			panRanges[i] = atoi(strVal.c_str());
-			i++;
-		}
-		poClassifiedRaster = oClassifier.ClassifySumMethod(listRanges.size() - 1, panRanges);
-		nClasses = listRanges.size() - 1;
-	}
 	
 
-	/*
-	GeoRasterBuffer* poInputDataBuffer = oClassifier.GetGeoRasterBufferRef();
-	oRasterizedVector.CreateBuffer(1, poInputDataBuffer->get_x_size(), poInputDataBuffer->get_y_size());
-	oRasterizedVector.InitByValue(1);
-	oRasterizedVector.CloneGeoRef(poInputDataBuffer);
-
-	OGRGeometry* poVectorGeometry = VectorOperations::ReadAndTransformGeometry(oOptionParser.GetOptionValue("-v"),
-																				poInputDataBuffer->GetSRSRef());
-	OGRGeometry* poBufferedGeometry = poVectorGeometry->Buffer(dblMercBuffer, 5); //ToDo
-	oRasterizedVector.Clip(poBufferedGeometry);
-	*/
+	//poClassifiedBuffer->SaveGeoRefFile("F:\\mpotanin\\byukreevka\\field6_IVI_5class_interpolate_2.tif");
 	
-	
-	//GeoRasterBuffer* poGeoBuffer = oClassifier.ClassifySumMethod(0, nClasses, dblSTDCoeff);
-	//Y:\Kosmosnimki\Operative\Landsat8\ndvi\2017\2017-12-13\LC81750282017347LGN00_ndvi.tiles
-
-	///*
-	if (nMajorityFilterNumRun > 0)
+	if (oOptionParser.GetOptionValue("-o_geojson") != "")
 	{
-		for (int i = 0; i < nMajorityFilterNumRun; i++)
-		{
-			Classifier::ApplyMajorityFilter((unsigned char*)poClassifiedRaster->get_pixel_data_ref(),
-				poClassifiedRaster->get_x_size(),
-				poClassifiedRaster->get_y_size(),
-				nClasses,
-				nWinSize);
-		}
-		//poClassifiedRaster->Burn(oOptionParser.GetOptionValue("-v"), 2);
-		poClassifiedRaster->Clip(oOptionParser.GetOptionValue("-v"));
+		map<int, OGRMultiPolygon*> mapZones = poClassifiedBuffer->Polygonize(1, 1, nClasses);
+		ZoningMap oZM;
+		oZM.InitDirectly(mapZones);
+		oZM.Clip(poVecBorder);
+		
+		OGRSpatialReference oWGS84SRS;
+		oWGS84SRS.SetWellKnownGeogCS("WGS84");
+
+		oZM.TransformToSRS(oMercTMS.GetTilingSRSRef(), &oWGS84SRS);
+
+		oZM.SaveToVectorFile(oOptionParser.GetOptionValue("-o_geojson"),&oWGS84SRS);
+
+		//oZM.SaveToFile(oOptionParser.GetOptionValue("-o_geojson"));
+		//oZM.FilterByArea(5000);
+		//oZM.SaveToFile("F:\\mpotanin\\byukreevka\\zones3_clipped_nofilt_field6.shp", "");
 	}
-	//*/
 
 	
 
 
 	GDALColorTable *poColTab = new GDALColorTable(GPI_RGB);
+
 	if ((oOptionParser.GetValueList("-col").size() == 0) && (oOptionParser.GetOptionValue("-ranges") == ""))
 	{
 		if (nClasses == 3)
@@ -283,28 +265,112 @@ int main(int nArgs, char* argv[])
 			for (int i = 0; i <= nClasses; i++)
 				poColTab->SetColorEntry(i, &arrColors[i]);
 		}
-		
+
 	}
 	else
 	{
 		GDALColorEntry oColor;
 		oColor.c1 = 0; oColor.c2 = 0; oColor.c3 = 0;
 		poColTab->SetColorEntry(0, &oColor);
-		
+
 		int i = 0;
 		unsigned char panRGB[3];
 		for (string strColor : oOptionParser.GetValueList("-col"))
 		{
 			GMXString::ConvertStringToRGB(strColor, panRGB);
 			oColor.c1 = panRGB[0]; oColor.c2 = panRGB[1]; oColor.c3 = panRGB[2];
-			poColTab->SetColorEntry(i+1, &oColor);
+			poColTab->SetColorEntry(i + 1, &oColor);
 			i++;
 		}
 	}
-	
-	poClassifiedRaster->set_color_table(poColTab);
-	poClassifiedRaster->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
+
+
+	poClassifiedBuffer->AdjustExtentToClippedArea();
+
+	poClassifiedBuffer->set_color_table(poColTab);
+	poClassifiedBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
 		oOptionParser.GetOptionValue("-o_png") : oOptionParser.GetOptionValue("-o_tif"));
+
+
+
+
+
+	delete[]panIntervals;
+	delete(poClassifiedBuffer);
+	delete(poColTab);
+	delete(poGeoBuffer);
+
+
+	//double dblPixelOfset = 2;
+	//double dblSTDCoeff = 1.6;
+	//int nWinSize = 5;
+	//int nClasses
+
+	//
+	//Classifier::Init by geometry object
+	//static Classifier::ParseVectorFileForBatchProcessing
+	//static Classifier::PixelsToPolygons
+	//
+
+
+
+	/*
+	Classifier oClassifier;
+	if (!oClassifier.Init(listTileContainers, 
+						oOptionParser.GetOptionValue("-v"),
+						oOptionParser.GetOptionValue("-z") == "" ? 0 : atoi(oOptionParser.GetOptionValue("-z").c_str())))
+	{
+		cout << "ERROR: reading input tile containers" << endl;
+		return 5;
+	}
+	
+
+	
+	
+	GeoRasterBuffer* poClassifiedRaster = 0;
+
+	if (oOptionParser.GetOptionValue("-ranges") == "")
+	{
+		
+	}
+	else
+	{
+		list<string> listRanges = GMXString::SplitCommaSeparatedText(oOptionParser.GetOptionValue("-ranges"));
+		int* panRanges = new int[listRanges.size()];
+		int i = 0;
+		for (string strVal : listRanges)
+		{
+			panRanges[i] = atoi(strVal.c_str());
+			i++;
+		}
+		poClassifiedRaster = oClassifier.ClassifyByPredefinedIntervals(listRanges.size() - 1, panRanges);
+		nClasses = listRanges.size() - 1;
+	}
+	
+
+	
+	if (nMajorityFilterNumRun > 0)
+	{
+		for (int i = 0; i < nMajorityFilterNumRun; i++)
+		{
+			Classifier::ApplyMajorityFilter((unsigned char*)poClassifiedRaster->get_pixel_data_ref(),
+				poClassifiedRaster->get_x_size(),
+				poClassifiedRaster->get_y_size(),
+				nClasses,
+				nWinSize);
+		}
+		//poClassifiedRaster->Burn(oOptionParser.GetOptionValue("-v"), 2);
+		poClassifiedRaster->Clip(oOptionParser.GetOptionValue("-v"));
+	}
+	
+	
+
+
+	
+	//debug
+	poClassifiedRaster->PolygonizeRange(2, 2);
+
+	//end-debug
 
 	if (oOptionParser.GetOptionValue("-o_csv") != "")
 	{
@@ -315,11 +381,8 @@ int main(int nArgs, char* argv[])
 	}
 	
 
-	//png 32bit
 
-	delete(poClassifiedRaster);
-	delete(poColTab);
-
+	*/
 
 	return 0;
 }

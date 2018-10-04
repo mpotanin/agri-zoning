@@ -4,6 +4,101 @@
 
 namespace agrigate
 {
+	GeoRasterBuffer*  GeoRasterBuffer::InitFromNDVITilesList(
+		list<string> listNDVITiles, 
+		OGRGeometry* poVectorMask, 
+		double dblPixelBuffer,
+		int nZoom )
+	{		
+		if (listNDVITiles.size() == 0) return false;
+		if (!poVectorMask) return false;
+
+		GMXTileContainer* poContainer = 
+			(GMXTileContainer*)TileContainerFactory::OpenForReading(*listNDVITiles.begin());
+		if (poContainer == 0) return 0;
+		MercatorTileMatrixSet oWebMercTMS(WEB_MERCATOR);
+
+
+		nZoom = (nZoom == 0) ? poContainer->GetMaxZoom() : nZoom;
+		poContainer->Close();
+		delete(poContainer);
+
+		OGREnvelope oVectorMaskEnvp;
+		poVectorMask->getEnvelope(&oVectorMaskEnvp);
+		double dblEnvpOffset = 2 * oWebMercTMS.CalcPixelSizeByZoom(nZoom);
+		oVectorMaskEnvp.MinX -= dblEnvpOffset;
+		oVectorMaskEnvp.MinY -= dblEnvpOffset;
+		oVectorMaskEnvp.MaxX += dblEnvpOffset;
+		oVectorMaskEnvp.MaxY += dblEnvpOffset;
+		
+		int minx, maxx, miny, maxy;
+		oWebMercTMS.CalcTileRange(oVectorMaskEnvp, nZoom, minx, miny, maxx, maxy);
+
+		int nWidth = 256 * (maxx - minx + 1);
+		int nHeight = 256 * (maxy - miny + 1);
+		GeoRasterBuffer *poOutputBuffer =  new GeoRasterBuffer();
+		poOutputBuffer->CreateBuffer(1, nWidth, nHeight, 0, GDT_UInt16);
+		poOutputBuffer->InitByValue(0);
+		uint16_t* panIVIVals = (uint16_t*)poOutputBuffer->get_pixel_data_ref();
+
+		int f = -1;
+		for (string strContainer : listNDVITiles)
+		{
+			f++;
+			if (!(poContainer = (GMXTileContainer*)TileContainerFactory::OpenForReading(strContainer)))
+			{
+				delete(poOutputBuffer);
+				cout << "ERROR: reading file " << strContainer << endl;
+				return false;
+			}
+
+			for (int x = minx; x <= maxx; x++)
+			{
+				for (int y = miny; y <= maxy; y++)
+				{
+					unsigned char* pabyTileData = 0;
+					unsigned int nSize = 0;
+
+					bool bTileIsRead = (poContainer->GetProjType() == WEB_MERCATOR) ?
+						poContainer->GetTile(nZoom, x, y, pabyTileData, nSize) :
+						poContainer->GetWebMercTile(nZoom, x, y, pabyTileData, nSize);
+
+					if (!bTileIsRead)
+					{
+						printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strContainer);
+						poContainer->Close();
+						delete(poOutputBuffer);
+						return false;
+					}
+
+					RasterBuffer oTileBuffer;
+					oTileBuffer.CreateBufferFromInMemoryData(pabyTileData, nSize, PNG_TILE);
+					delete[]pabyTileData;
+
+					unsigned char* panNDVIVals = (unsigned char*)oTileBuffer.get_pixel_data_ref();
+					int nOffsetTop = 256 * (y - miny);
+					int nOffsetLeft = 256 * (x - minx);
+					for (int i = 0; i < 256; i++)
+					{
+						for (int j = 0; j < 256; j++)
+						{
+							panIVIVals[nWidth*(nOffsetTop + j) + nOffsetLeft + i] +=
+								panNDVIVals[256 * j + i] != 0 ? (panNDVIVals[256 * j + i] - 101) : 0;
+						}
+					}
+				
+				}
+			}
+			poContainer->Close();
+			delete(poContainer);
+		}
+
+		poOutputBuffer->SetTMSGeoRef(&oWebMercTMS, nZoom, minx, miny, maxx, maxy);
+		poOutputBuffer->Clip(poVectorMask,dblPixelBuffer);
+				
+		return poOutputBuffer;
+	}
+
 	bool GeoRasterBuffer::CloneGeoRef(GeoRasterBuffer* poBuffer)
 	{
 		if (!poBuffer) return false;
@@ -16,7 +111,7 @@ namespace agrigate
 		return true;
 	}
 
-	bool GeoRasterBuffer::SetGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy)
+	bool GeoRasterBuffer::SetTMSGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy)
 	{
 		m_poSRS = poSRS->GetTilingSRSRef()->Clone();
 		m_dblRes = poSRS->CalcPixelSizeByZoom(z);
@@ -25,7 +120,49 @@ namespace agrigate
 		return false;
 	}
 
-	GDALDataset* GeoRasterBuffer::CreateGDALDataset(bool bCopyData)
+	template <typename T> 
+	GeoRasterBuffer* GeoRasterBuffer::CreateMaskBufferByRanges(T type, int nOffset, int nStep, int nUpperBound)
+	{
+		int n = x_size_*y_size_;
+		unsigned char* panMaskPixels = new unsigned char[n];
+		T* panPixels = (T*)p_pixel_data_;
+		for (int i = 0; i < n; i++)
+		{
+			if ((panPixels[i] < nOffset) || (panPixels[i]>nUpperBound))
+				panMaskPixels[i] = 0;
+			else
+				panMaskPixels[i] = 1 + ((panPixels[i]-nOffset)/nStep);
+		}
+
+		GeoRasterBuffer* poMaskBuffer = new GeoRasterBuffer();
+		poMaskBuffer->CreateBuffer(1, x_size_, y_size_, panMaskPixels, GDT_Byte);
+		poMaskBuffer->CloneGeoRef(this);
+		delete[]panMaskPixels;
+		return poMaskBuffer;
+	}
+
+	template <typename T>
+	GeoRasterBuffer* GeoRasterBuffer::CreateMaskBufferByRange(T type, int nMinValue, int nMaxValue)
+	{
+		int n = x_size_*y_size_;
+		uint16_t* panMaskPixels = new uint16_t[n];
+		
+				
+		T* panPixels = (T*)p_pixel_data_;
+		for (int i = 0; i < n; i++)
+		{
+			panMaskPixels[i] = (panPixels[i] >= nMinValue &&  panPixels[i] <= nMaxValue) ?
+				panPixels[i] : 0;
+		}
+		
+		GeoRasterBuffer* poMaskBuffer = new GeoRasterBuffer();
+		poMaskBuffer->CreateBuffer(1, x_size_, y_size_, panMaskPixels, GDT_UInt16);
+		poMaskBuffer->CloneGeoRef(this);
+		delete[]panMaskPixels;
+		return poMaskBuffer;
+	}
+
+	GDALDataset* GeoRasterBuffer::CreateInMemGDALDataset(bool bCopyData)
 	{
 		string strTiffInMem = "/vsimem/tiffinmem_" + GMXString::ConvertIntToString(rand());
 		double padblGeoTransform[6];
@@ -43,7 +180,7 @@ namespace agrigate
 
 		if (bCopyData) 
 			poVrtDS->RasterIO(GF_Write, 0, 0, x_size_, y_size_, get_pixel_data_ref(),
-							x_size_, y_size_, data_type_,num_bands_, 0, 0, 0, 0);
+			x_size_, y_size_, data_type_,num_bands_, 0, 0, 0, 0);
 
 		poVrtDS->SetGeoTransform(padblGeoTransform);
 		char *pachWKT;
@@ -68,67 +205,253 @@ namespace agrigate
 
 	bool GeoRasterBuffer::Clip(string strVectorFile, double dblPixelOffset)
 	{
-		OGRGeometry* poVectorGeometry =
+		OGRGeometry* poClipGeometry =
 			VectorOperations::ReadAndTransformGeometry(strVectorFile, GetSRSRef());
-		if (!poVectorGeometry) return false;
+		if (!poClipGeometry) return false;
 
+		bool bResult = Clip(poClipGeometry,dblPixelOffset);
 
-		OGRGeometry* poBufferedGeometry = fabs(dblPixelOffset) > 0.1 ?
-			poVectorGeometry->Buffer(-m_dblRes*dblPixelOffset, 5) :
-			poVectorGeometry->clone();
-		
-		delete(poVectorGeometry);
+		delete(poClipGeometry);
 
-		if (!poBufferedGeometry)
-			return false;
-		
-		bool bResult = Clip(poBufferedGeometry);
-
-		delete(poBufferedGeometry);
-	
 		return bResult;
 	}
 
-	GeoRasterBuffer* GeoRasterBuffer::Burn(string strVectorFile, double dblPixelOffset)
+	bool  ClassifiedRasterBuffer::AdjustExtentToClippedArea()
+	{
+		int nTop=0, nLeft=0, nRight=0, nBottom=0;
+
+		//calculate pixel offsets: top, bottom, left, right
+		unsigned char* panPixels = (unsigned char*)p_pixel_data_;
+		int nArea = x_size_*y_size_;
+		int i,j;
+		for (i = 0; i<nArea; i++)
+			if (panPixels[i] != 0) break;
+		nTop = i / x_size_;
+
+		for (i = nArea-1; i>-1; i--)
+			if (panPixels[i] != 0) break;
+		nBottom = y_size_ -1 - (i / x_size_);
+
+		for (i = 0; i < x_size_; i++)
+		{
+			for (j = 0; j < y_size_; j++)
+			{
+				if (panPixels[j*x_size_ + i] != 0) break;
+			}
+			if (j < y_size_)
+			{
+				nLeft = i;
+				break;
+			}
+		}
+
+		for (i = x_size_ - 1; i > -1; i--)
+		{
+			for (j = 0; j < y_size_; j++)
+			{
+				if (panPixels[j*x_size_ + i] != 0) break;
+			}
+			if (j < y_size_)
+			{
+				nRight = x_size_ - 1 - i;
+				break;
+			}
+		}
+		
+
+
+		void* panPixelBlock = 
+			GetPixelDataBlock(nLeft, nTop, x_size_ - nLeft - nRight, y_size_ - nTop - nBottom);
+		ClearPixelData();
+		p_pixel_data_ = panPixelBlock;
+
+		x_size_ -= (nLeft + nRight);
+		y_size_ -= (nTop + nBottom);
+
+		m_oEnvp.MinX += nLeft*m_dblRes;
+		m_oEnvp.MaxX -= nRight*m_dblRes;
+		m_oEnvp.MinY += nBottom*m_dblRes;
+		m_oEnvp.MaxY -= nTop*m_dblRes;
+		
+		
+		return true;
+	}
+
+	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyByPredefinedIntervals(int nNumClass, int* panIntervals)
+	{
+		if (nNumClass == 0 || panIntervals == 0) return 0;
+		
+		int nArea = x_size_*y_size_;
+		unsigned char* panClasses = new unsigned char[nArea];
+		uint16_t* panValues = (uint16_t*)p_pixel_data_;
+				
+		int c;
+
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panValues[i] == 0) panClasses[i] = 0;
+			else
+			{
+				for (c = 1; c < nNumClass; c++)
+					if (panIntervals[c]>panValues[i]) break;
+				panClasses[i] = c;
+			}
+		}
+
+		ClassifiedRasterBuffer* poClassifiedBuffer = new ClassifiedRasterBuffer(nNumClass);
+		poClassifiedBuffer->CreateBuffer(1, x_size_, y_size_, panClasses);
+		poClassifiedBuffer->CloneGeoRef(this);
+
+		delete[]panClasses;
+		return poClassifiedBuffer;
+	}
+
+	//ToDo
+	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyEqualArea(int nNumClass, int* &panIntervals)
+	{
+		uint16_t* panPixels = (uint16_t*)p_pixel_data_;
+		int nArea = x_size_*y_size_;
+		int nNumPixels = 0;
+		int nMax = -0xfffffff, nMin = 0xfffffff;
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panPixels[i])
+			{
+				nNumPixels++;
+				nMax = nMax < panPixels[i] ? panPixels[i] : nMax;
+				nMin = nMin > panPixels[i] ? panPixels[i] : nMin;
+			}
+		}
+
+		if (nNumPixels == 0)
+		{
+			panIntervals = 0;
+			return 0;
+		}
+
+		int nHistSize = nMax - nMin + 1;
+		int* panHist = new int[nHistSize];
+		for (int i = 0; i < nHistSize; i++)
+			panHist[i] = 0;
+
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panPixels[i]) panHist[panPixels[i] - nMin]++;
+		}
+
+		panIntervals = new int[nNumClass + 1];
+		panIntervals[0] = nMin;
+		panIntervals[nNumClass] = nMax;
+
+		int nFreqSum = 0;
+		int nClassPixelCount = nNumPixels / nNumClass;
+		int n = 1;
+
+		for (int i = 0; i < nHistSize; i++)
+		{
+			if ((nFreqSum / nClassPixelCount) < ((nFreqSum + panHist[i]) / nClassPixelCount))
+			{
+				panIntervals[n] = i + nMin;
+				if (n == nNumClass - 1) break;
+				else n++;
+			}
+			nFreqSum += panHist[i];
+		}
+
+		if (n < nNumClass-1)
+		{
+			for (int i = n; i++; i < nNumClass)
+				panIntervals[i] = nMax;
+		}
+
+		delete[]panHist;
+		return ClassifyByPredefinedIntervals(nNumClass, panIntervals);
+	}
+
+	//TODO	- case dblSTDCoeff = 0 and write values to panRanges
+	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyEqualIntervals(int nNumClass,
+		int* &panIntervals, double dblSTDCoeff)
+	{
+		uint16_t* panPixels = (uint16_t*)p_pixel_data_;
+
+		double dblMean = 0;
+		double dblSTD = 0;
+		int nNumPixels = 0;
+		int nMax = -0xfffffff, nMin = 0xfffffff;
+
+		int nArea = x_size_*y_size_;
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panPixels[i])
+			{
+				nNumPixels++;
+				if (dblSTDCoeff > 0)
+				{
+					dblMean += panPixels[i];
+					dblSTD += panPixels[i] * panPixels[i];
+				}
+				nMax = nMax < panPixels[i] ? panPixels[i] : nMax;
+				nMin = nMin > panPixels[i] ? panPixels[i] : nMin;				
+			}
+		}
+		
+		if (nNumPixels == 0)
+		{
+			panIntervals = 0;
+			return 0;
+		}
+
+		panIntervals = new int[nNumClass + 1];
+		panIntervals[0] = nMin;
+		panIntervals[nNumClass] = nMax;
+
+		if (dblSTDCoeff > 0)
+		{
+			dblMean /= nNumPixels;
+			dblSTD = sqrt((dblSTD / nNumPixels) - dblMean*dblMean);
+			double dblMin = dblMean - dblSTD * dblSTDCoeff;
+			double dblMax = dblMean + dblSTD * dblSTDCoeff;
+			double dblDiff = (dblMax - dblMin) / nNumClass;
+			for (int i = 1; i < nNumClass; i++)
+				panIntervals[i] = (int)(dblMin + i*dblDiff + 0.5);
+		}
+
+		return ClassifyByPredefinedIntervals(nNumClass, panIntervals);
+	}
+
+	
+	
+	GeoRasterBuffer* GeoRasterBuffer::BurnVectorMask(OGRGeometry* poClipGeom, double dblPixelOffset)
 	{
 		GeoRasterBuffer* poRasterizedVector = new GeoRasterBuffer();
 		poRasterizedVector->CreateBuffer(1, x_size_, y_size_);
 		poRasterizedVector->InitByValue(1);
 		poRasterizedVector->CloneGeoRef(this);
-		
-		if (! poRasterizedVector->Clip(strVectorFile, dblPixelOffset))
+
+		OGRGeometry* poBufferedClipGeom = dblPixelOffset ?
+			poClipGeom->Buffer(dblPixelOffset*this->m_dblRes) : poClipGeom;
+
+		if (!poBufferedClipGeom)
 		{
 			delete(poRasterizedVector);
 			return 0;
 		}
-		else return poRasterizedVector;
-
-		/*
-		OGRGeometry* poVectorGeometry = 0;
-		OGRGeometry* poBufferedGeometry = 0;
 		
-		if (poVectorGeometry = VectorOperations::ReadAndTransformGeometry(strVectorFile, GetSRSRef()))
+		bool bClipResult = poRasterizedVector->Clip(poBufferedClipGeom);
+
+		if (dblPixelOffset) delete(poBufferedClipGeom);
+
+		if (! bClipResult)
 		{
-			if (poBufferedGeometry = poVectorGeometry->Buffer(-m_dblRes*dblPixelOffset, 5))
-			{
-				if (!poRasterizedVector->Clip(poBufferedGeometry))
-				{
-					delete(poRasterizedVector);
-					poRasterizedVector = 0;
-				}
-
-			}
+			delete (poRasterizedVector);
+			return 0;
 		}
-		
-		delete(poVectorGeometry);
-		delete(poBufferedGeometry);
-		return poRasterizedVector;
-		*/
-		
+		else return poRasterizedVector;
 	}
-
-	bool GeoRasterBuffer::Polygonize(string strOutputVectorFile)
+	
+	bool GeoRasterBuffer::PolygonizePixels(string strOutputVectorFile, bool bSaveTo4326)
 	{
+		
 		GDALDriver *poDriver = GMXFileSys::GetExtension(strOutputVectorFile) == "shp" ?
 			GetGDALDriverManager()->GetDriverByName("ESRI Shapefile") :
 			GetGDALDriverManager()->GetDriverByName("GeoJSON");
@@ -138,7 +461,11 @@ namespace agrigate
 			printf("Creation of output file failed.\n");
 			exit(1);
 		}
-		OGRLayer *poLayer = poDS->CreateLayer("pixels", this->m_poSRS, wkbPolygon, NULL);
+
+		OGRSpatialReference oSRS4326;
+		oSRS4326.SetWellKnownGeogCS("WGS84");
+
+		OGRLayer *poLayer = poDS->CreateLayer("pixels", bSaveTo4326 ? &oSRS4326 : this->m_poSRS, wkbPolygon, NULL);
 		OGRFieldDefn oField("DN", OFTInteger);
 		poLayer->CreateField(&oField);
 		int t = 0;
@@ -163,50 +490,33 @@ namespace agrigate
 				poPixelPoly->addRing(&oPixelRing);
 				OGRFeature *poFeature = OGRFeature::CreateFeature(poLayer->GetLayerDefn());
 				poFeature->SetField("DN", val / num_bands_);
+				
+				if (bSaveTo4326)
+				{
+					poPixelPoly->assignSpatialReference(this->m_poSRS);
+					poPixelPoly->transformTo(&oSRS4326);
+					poPixelPoly->assignSpatialReference(0);
+				}
+
 				poFeature->SetGeometry(poPixelPoly);
 				poLayer->CreateFeature(poFeature);
 				OGRFeature::DestroyFeature(poFeature);
 			}
 		}
-		
-		
+			
 		GDALClose(poDS);
-	
-		/*
-	 while( !feof(stdin)
-           && fscanf( stdin, "%lf,%lf,%32s", &x, &y, szName ) == 3 )
-    {
-        OGRFeature *poFeature;
-        poFeature = OGRFeature::CreateFeature( poLayer->GetLayerDefn() );
-        poFeature->SetField( "Name", szName );
-        OGRPoint pt;
-        pt.setX( x );
-        pt.setY( y );
-        poFeature->SetGeometry( &pt );
-        if( poLayer->CreateFeature( poFeature ) != OGRERR_NONE )
-        {
-            printf( "Failed to create feature in shapefile.\n" );
-            exit( 1 );
-        }
-        OGRFeature::DestroyFeature( poFeature );
-    }
-    GDALClose( poDS );
-		
-		*/
-
-
-
 	
 		return true;
 	}
-
-	bool GeoRasterBuffer::Clip(OGRGeometry* poClipGeom)
+	
+	bool GeoRasterBuffer::Clip(OGRGeometry* poClipGeom, double dblPixelOffset)
 	{
-		double padblGeoTransform[6];
-		if (!CalcGeoTransform(padblGeoTransform)) return false;
 				
-		GDALDataset* poBufferDS = CreateGDALDataset();
-		GDALDataset* poClippedDS = CreateGDALDataset(false);
+		double padblGeoTransform[6];
+		if (!CalcGeoTransform(padblGeoTransform)) return 0;
+				
+		GDALDataset* poBufferDS = CreateInMemGDALDataset();
+		GDALDataset* poClippedDS = CreateInMemGDALDataset(false);
 
 		GDALWarpOptions *poWarpOptions = GDALCreateWarpOptions();
 		poWarpOptions->papszWarpOptions = 0;
@@ -217,7 +527,11 @@ namespace agrigate
 		
 		char* pachSRSWKT;
 		m_poSRS->exportToWkt(&pachSRSWKT);
-		poWarpOptions->hCutline = VectorOperations::ConvertFromSRSToPixelLine(poClipGeom, padblGeoTransform);
+		
+		OGRGeometry* poBufferClipGeom = dblPixelOffset == 0 ?
+			poClipGeom : poClipGeom->Buffer(this->m_dblRes*dblPixelOffset);
+		poWarpOptions->hCutline = VectorOperations::ConvertFromSRSToPixelLine(poBufferClipGeom, padblGeoTransform);
+
 		poWarpOptions->pTransformerArg = GDALCreateApproxTransformer(GDALGenImgProjTransform,
 			GDALCreateGenImgProjTransformer(poBufferDS, pachSRSWKT, poClippedDS, pachSRSWKT, false, 0.0, 1),
 			dblError);
@@ -232,19 +546,27 @@ namespace agrigate
 		bool  warp_error = (CE_None != gdal_warp_operation.ChunkAndWarpImage(0, 0, x_size_, y_size_));
 
 		GDALDestroyApproxTransformer(poWarpOptions->pTransformerArg);
+
 		delete((OGRGeometry*)poWarpOptions->hCutline);
 		poWarpOptions->hCutline = 0;
 		GDALDestroyWarpOptions(poWarpOptions);
 		OGRFree(pachSRSWKT);
+
 		poClippedDS->RasterIO(GF_Read, 0, 0, x_size_, y_size_, get_pixel_data_ref(),
 			x_size_, y_size_, data_type_, num_bands_, 0, 0, 0, 0);
 		GDALClose(poBufferDS);
 		GDALClose(poClippedDS);
-				
+		
+		//ToDoo VSIUnlink: poBufferDS, poClippedDS - need testing
+
+	
+		if (dblPixelOffset != 0) delete(poBufferClipGeom);
 
 		return true;
+
 	}
 
+	
 	bool GeoRasterBuffer::SaveGeoRefFile(string strOutput)
 	{
 		SaveBufferToFile(strOutput);
@@ -253,57 +575,410 @@ namespace agrigate
 		return true;
 	}
 
-	bool Classifier::ApplyMajorityFilter(unsigned char* pabClasses, int w, int h, int nClasses, int nWinSize)
+	map<int,OGRMultiPolygon*> GeoRasterBuffer::Polygonize(int nOffset, int nStep, int nUpperBound)
 	{
-		int *panFreq = new int[nClasses + 1];
-		int nWinSize_2 = nWinSize / 2;
-		int nMaxFreqClass;
+		GeoRasterBuffer* poMaskBuffer = 0;
+		map<int, OGRMultiPolygon*> mapOutput;
 
-		unsigned char* pabClassesFiltered = new unsigned char[w*h];
-		for (int y = 0; y<h; y++)
-		for (int x = 0; x<w; x++)
-			pabClassesFiltered[w*y + x] = pabClasses[y*w + x];
-
-
-		for (int y = 0; y < h; y++)
+		switch (data_type_)
 		{
-			for (int x = 0; x < w; x++)
+			case GDT_Byte:
 			{
-				//if (pabClasses[w*y + x] == 0) continue;
+				unsigned char t = 1;
+				poMaskBuffer = CreateMaskBufferByRanges(t,nOffset,nStep,nUpperBound);
+				break;
+			}
+			case GDT_UInt16:
+			{
+				uint16_t t = 257;
+				poMaskBuffer = CreateMaskBufferByRanges(t, nOffset, nStep, nUpperBound);
+				break;
+			}
+			case GDT_Int16:
+			{
+				  int16_t t = 257;
+				  poMaskBuffer = CreateMaskBufferByRanges(t, nOffset, nStep, nUpperBound);
+				  break;
+			}
+			default:
+				return mapOutput;
+		}
+		GDALDataset* poInMemDS = poMaskBuffer->CreateInMemGDALDataset(true);
 
-				for (int q = 0; q <= nClasses; q++)
-					panFreq[q] = 0;
-				
-				for (int i = ((y>=nWinSize_2) ? -nWinSize_2 : -y); 
-						 i <= ((y<h-nWinSize_2) ? nWinSize_2 : h-y-1);
-						 i++)
-				{
-					for (int j = ((x >= nWinSize_2) ? -nWinSize_2 : -x);
-						j <= ((x < w-nWinSize_2) ? nWinSize_2 : w - x - 1);
-						j++)
-						panFreq[pabClasses[w*(y + i) + x + j]]++;
-				}
+		string	strInMemName = ("/vsimem/shpinmem_" + GMXString::ConvertIntToString(rand()));
+		GDALDataset* poInMemSHP = GetGDALDriverManager()->GetDriverByName("ESRI Shapefile")->
+			Create(strInMemName.c_str(), 0, 0, 0, GDT_Unknown, NULL);
+		OGRLayer* poLayer = poInMemSHP->CreateLayer(strInMemName.c_str(), m_poSRS, wkbPolygon, NULL);
+		OGRFieldDefn oFieldDefn("DN", OFTInteger);
+		poLayer->CreateField(&oFieldDefn);
 
-				nMaxFreqClass = pabClasses[w*y + x];
-				panFreq[0] = 0;
-				for (int q = 1; q <= nClasses; q++)
-					nMaxFreqClass = panFreq[q] > panFreq[nMaxFreqClass] ? q : nMaxFreqClass;
-				pabClassesFiltered[w*y + x] = nMaxFreqClass;
+	
+
+		if ((OGRERR_NONE == GDALPolygonize(poInMemDS->GetRasterBand(1), poInMemDS->GetRasterBand(1),
+			poLayer, 0, 0, 0, 0)) && (poLayer->GetFeatureCount()>0))
+		{
+			
+			while (OGRFeature* poFeature = poLayer->GetNextFeature())
+			{
+				if (mapOutput.find(poFeature->GetFieldAsInteger("DN")) == mapOutput.end())
+					mapOutput[poFeature->GetFieldAsInteger("DN")] = 
+						(OGRMultiPolygon*)OGRGeometryFactory::createGeometry(wkbMultiPolygon);
+
+				mapOutput[poFeature->GetFieldAsInteger("DN")]->
+						addGeometry(poFeature->GetGeometryRef());
+								
+				OGRFeature::DestroyFeature(poFeature);
 			}
 		}
+			
 
-		for (int y = 0; y<h; y++)
-		for (int x = 0; x<w; x++)
-			pabClasses[y*w + x] = pabClassesFiltered[w*y + x];
+		GDALClose(poInMemDS);
+		poInMemSHP->DeleteLayer(0);
+		GDALClose(poInMemSHP);
+		VSIUnlink(strInMemName.c_str());
 
-		delete[]panFreq;
-		delete[]pabClassesFiltered;
+		return mapOutput;
+	}
+
+	/*
+	OGRMultiPolygon* GeoRasterBuffer::PolygonizeRange(int nMinValue, int nMaxValue)
+	{
+	
+		OGRMultiPolygon** papoMPolygons = Polygonize(nMinValue, nMaxValue - nMinValue + 1, nMaxValue);
+		OGRMultiPolygon* poM
+
+	
+		GeoRasterBuffer* poMaskBuffer = 0;
+		switch (data_type_)
+		{
+			case GDT_Byte:
+			{
+				unsigned char t = 1;
+				poMaskBuffer = CreateMaskBufferByRange(t, nMinValue, nMaxValue);
+				break;
+			}
+			case GDT_UInt16:
+			{
+				uint16_t t = 257;
+				poMaskBuffer = CreateMaskBufferByRange(t, nMinValue, nMaxValue);
+				break;
+			}
+			case GDT_Int16:
+			{
+				int16_t t = 257;
+				poMaskBuffer = CreateMaskBufferByRange(t, nMinValue, nMaxValue);
+				break;
+			}
+			default:
+				return 0;
+		}
+		GDALDataset* poInMemDS = poMaskBuffer->CreateInMemGDALDataset(true);
+
+		string	strInMemName = ("/vsimem/shpinmem_" + GMXString::ConvertIntToString(rand()));
+		GDALDataset* poInMemSHP = GetGDALDriverManager()->GetDriverByName("ESRI Shapefile")->
+			Create(strInMemName.c_str(), 0, 0, 0, GDT_Unknown, NULL);
+		OGRLayer* poLayer = poInMemSHP->CreateLayer(strInMemName.c_str(), m_poSRS, wkbPolygon, NULL);
+		OGRFieldDefn oFieldDefn("DN", OFTInteger);
+		poLayer->CreateField(&oFieldDefn);
+		
+		OGRMultiPolygon* poOutputMPoly = 0;
+		
+		if ((OGRERR_NONE == GDALPolygonize(poInMemDS->GetRasterBand(1), poInMemDS->GetRasterBand(1),
+			poLayer, 0, 0, 0, 0)) && (poLayer->GetFeatureCount()>0))
+		{
+			poOutputMPoly = new OGRMultiPolygon();
+			while (OGRFeature* poFeature = poLayer->GetNextFeature())
+			{
+				poOutputMPoly->addGeometry(poFeature->GetGeometryRef());
+				OGRFeature::DestroyFeature(poFeature);
+			}
+		}
+		
+		GDALClose(poInMemDS);
+		poInMemSHP->DeleteLayer(0);
+		GDALClose(poInMemSHP);
+		VSIUnlink(strInMemName.c_str());
+
+		return poOutputMPoly;
+		
+	}
+	*/
+	
+	/*
+	bool GeoRasterBuffer::TraceEdge(int nMinValue,
+		int nMaxValue,
+		int nX0,
+		int nY0,
+		int nX1,
+		int nY1,
+		list<pair<int, int>> &listEdgeLine)
+	{
+	
+		uint16_t* panValues = (uint16_t*)this->p_pixel_data_;
+
+		int panArrows[4][2] = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } };
+		
+		listEdgeLine.push_back(pair<int, int>(nX0, nY0));
+		listEdgeLine.push_back(pair<int, int>(nX1, nY1));
+	
+			
+		while ( ((*listEdgeLine.begin()).first != listEdgeLine.back().first) || 
+			((*listEdgeLine.begin()).second != listEdgeLine.back().second))
+		{
+			for (int i = 0; i < 4; i++)
+			{
+				if ((nX1 + panArrows[i][0] == nX0) && (nY1 + panArrows[i][1] == nY0)) continue;
+			
+				int nW1 = nX1 - 1 + (panArrows[i][0]>0);
+				int nW2 = nX1 - (panArrows[i][0]<0);
+				
+				int nH1 = nY1 - 1 + (panArrows[i][1]>0);
+				int nH2 = nY1 - (panArrows[i][1]<0);
+
+				bool bPoint1InRange, bPoint2InRange;
+
+				if ((nW1 < 0) || (nW1 == this->x_size_) || (nH1 < 0) || (nH1 == this->y_size_)) bPoint1InRange = false;
+				else
+				{
+					bPoint1InRange = ((panValues[nH1*x_size_ + nW1]<nMinValue) ||
+						(panValues[nH1*x_size_ + nW1]>nMaxValue)) ? false : true;
+				}
+
+				if ((nW2 < 0) || (nW2 == this->x_size_) || (nH2 < 0) || (nH2 == this->y_size_)) bPoint2InRange = false;
+				else
+				{
+					bPoint2InRange = ((panValues[nH2*x_size_ + nW2]<nMinValue) || 
+									(panValues[nH2*x_size_ + nW2]>nMaxValue)) ? false : true;
+				}
+
+				if (bPoint1InRange != bPoint2InRange)
+				{
+					listEdgeLine.push_back(pair<int, int>(nX1 + panArrows[i][0], nY1 + panArrows[i][1]));
+					nX0 = nX1;
+					nY0 = nY1;
+					nX1 = nX1 + panArrows[i][0];
+					nY1 = nY1 + panArrows[i][1];
+					break;
+				}
+			}
+			//choose from one or two edges what is next
+		}
+
+
+
+		return true;
+	}
+	*/
+
+	/*
+	bool GeoRasterBuffer::CalculateContour(int nMinValue, int nMaxValue, OGRGeometry* &poSRSGeometry)
+	{
+		//iterate all pixels
+		//if pixel is on edge and there are untraced sides on edge
+		//pick a side on edge and start tracing
+		//repeat for other sides
+		//create an array of list<pair<int,int>>
+	}
+	*/
+
+	/*
+	bool Classifier::ConvertPixelsToPolygons(int nZ, string strNDVI, string strOutputVector)
+	{
+		Classifier oClassifier;
+		if (!oClassifier.Init(listTileContainers,
+			oOptionParser.GetOptionValue("-v"),
+			oOptionParser.GetOptionValue("-z") == "" ? 0 : atoi(oOptionParser.GetOptionValue("-z").c_str())))
+		{
+			cout << "ERROR: reading input tile containers" << endl;
+			return 5;
+		}
+
+		//debug
+		oClassifier.GetGeoRasterBufferRef()->Polygonize("F:\\mpotanin\\data6\\poly_174_z12.shp");
+
+	}
+	*/
+
+
+	bool ClassifiedRasterBuffer::ReplaceByInterpolatedValues(OGRGeometry* poVector,
+		double dblPixelInward, double dblPixelOutward)
+	{
+		GeoRasterBuffer* poMaskOutwardOffset = this->BurnVectorMask(poVector, dblPixelOutward);
+		GeoRasterBuffer* poMaskInwardOffset = this->BurnVectorMask(poVector, -dblPixelInward);
+
+		unsigned char* panOutwardBufferPixels = 
+			(unsigned char*)poMaskOutwardOffset->get_pixel_data_ref();
+		
+		unsigned char* panInwardBufferPixels =
+			(unsigned char*)poMaskInwardOffset->get_pixel_data_ref();
+
+		int nArea = x_size_*y_size_;
+
+		for (int i = 0; i < nArea; i++)
+		{
+			panOutwardBufferPixels[i] = panOutwardBufferPixels[i] ^ panInwardBufferPixels[i];
+		}
+	
+						
+		ApplyMajorityFilter(int(2 * (dblPixelOutward + dblPixelInward) + 3.5),
+			panOutwardBufferPixels);
+
+		delete(poMaskInwardOffset);
+		delete(poMaskOutwardOffset);
+
 
 		return true;
 	}
 
+	
+	bool ClassifiedRasterBuffer::ApplyMajorityFilter(int nWinSize, unsigned char* pabInterpolationMask )
+	{
+		int *panFreq = new int[m_nClasses + 1];
+		int nWinSize_2 = nWinSize / 2;
+		int nMaxFreqClass;
 
-	GeoRasterBuffer* Classifier::ClassifySumMethod(int nNumClass, int* panRanges)
+		int nArea = x_size_*y_size_;
+		unsigned char* pabClasses = (unsigned char*)p_pixel_data_;
+		unsigned char* pabClassesFiltered = new unsigned char[nArea];
+		for (int i = 0; i<nArea; i++)
+			pabClassesFiltered[i] = pabClasses[i];
+
+		
+		for (int y = 0; y < y_size_; y++)
+		{
+			for (int x = 0; x < x_size_; x++)
+			{
+				if (!pabInterpolationMask)
+				{
+					if (pabClasses[y*x_size_ + x] == 0) continue;
+				}
+				else
+				{
+					if (pabInterpolationMask[y*x_size_ + x]==0) continue;
+				}
+								
+				for (int q = 0; q <= m_nClasses; q++)
+					panFreq[q] = 0;
+				
+				for (int i = ((y>=nWinSize_2) ? -nWinSize_2 : -y); 
+						 i <= ((y<y_size_-nWinSize_2) ? nWinSize_2 : y_size_-y-1);
+						 i++)
+				{
+					for (int j = ((x >= nWinSize_2) ? -nWinSize_2 : -x);
+						j <= ((x < x_size_ - nWinSize_2) ? nWinSize_2 : x_size_ - x - 1);
+						j++)
+					{
+						if (!pabInterpolationMask)
+							panFreq[pabClasses[x_size_*(y + i) + x + j]]++;
+						else if (!pabInterpolationMask[x_size_*(y + i) + x + j])
+							panFreq[pabClasses[x_size_*(y + i) + x + j]]++;
+					}
+					
+				}
+
+				nMaxFreqClass = pabClasses[x_size_*y + x];
+				panFreq[0] = 0;
+				for (int q = 1; q <= m_nClasses; q++)
+					nMaxFreqClass = panFreq[q] > panFreq[nMaxFreqClass] ? q : nMaxFreqClass;
+				pabClassesFiltered[x_size_*y + x] = nMaxFreqClass;
+			}
+		}
+
+		this->p_pixel_data_ = pabClassesFiltered;
+		
+		delete[]pabClasses;
+		delete[]panFreq;
+
+		return true;
+	}
+
+	OGREnvelope GeoRasterBufferCollection::CalculateBundleEnvelope()
+	{
+		OGREnvelope oBundleEnvp = (*m_mapBuffers.begin()).second->GetEnvelope();
+		for (auto iter : m_mapBuffers)
+		{
+			oBundleEnvp=gmx::VectorOperations::MergeEnvelopes(oBundleEnvp,
+				iter.second->GetEnvelope());
+		}
+		return oBundleEnvp;
+	}
+
+	GeoRasterBufferCollection::~GeoRasterBufferCollection()
+	{
+		for (auto iter : m_mapBuffers)
+			delete(iter.second);
+	}
+
+	GeoRasterBufferCollection* InitBundleFromFileInput(string strNDVIFilesTable,
+		string strVectorFile, string strBasePath, int nZoom = 13)
+	{
+
+		return 0;
+	}
+
+
+
+	bool GeoRasterBufferCollection::Init(map<string, list<string>> mapNDVITiles,
+		map<string, OGRGeometry*> mapClipGeom, int nZoom)
+	{
+
+		for (auto iter : mapNDVITiles)
+		{
+			list<string> &listNDVI = iter.second;
+			string strName = iter.first;
+			if (!listNDVI.size() || !mapClipGeom[strName])
+			{
+				cout << "ERROR: null value input parameters for object: " << strName << endl;
+				continue;
+			}
+			else
+			{
+				m_mapBuffers[strName] =
+					GeoRasterBuffer::InitFromNDVITilesList(listNDVI,mapClipGeom[strName],nZoom);
+				if (!m_mapBuffers[strName])
+				{
+					cout << "ERROR: can't init properly object: " << strName << endl;
+					//ToDo
+					//Clear();					
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	bool GeoRasterBufferCollection::SaveToFile(string strFile, GDALColorTable *poColTab)
+	{
+		GeoRasterBuffer* poSampleBuffer = (*m_mapBuffers.begin()).second;
+
+		OGREnvelope oBundleEnvp = CalculateBundleEnvelope();
+		int nBundleW = (((oBundleEnvp.MaxX - oBundleEnvp.MinX) /
+			poSampleBuffer->GetPixelSize()) + 0.5);
+		int nBundleH = (((oBundleEnvp.MaxY - oBundleEnvp.MinY) /
+			poSampleBuffer->GetPixelSize()) + 0.5);
+
+		GeoRasterBuffer oBundleBuffer;
+		oBundleBuffer.CreateBuffer(poSampleBuffer->get_num_bands(), nBundleW, nBundleH, 
+			0, poSampleBuffer->get_data_type(),0,poColTab);
+		
+		for (auto iter : m_mapBuffers)
+		{
+			GeoRasterBuffer* poIterBuffer = iter.second;
+			int nOffsetLeft = ((poIterBuffer->GetEnvelope().MinX - oBundleEnvp.MinX) /
+				poSampleBuffer->GetPixelSize()) + 0.5;
+
+			int nOffsetTop = ((oBundleEnvp.MaxY - poIterBuffer->GetEnvelope().MaxY) /
+				poSampleBuffer->GetPixelSize()) + 0.5;
+			oBundleBuffer.SetPixelDataBlock(nOffsetLeft, nOffsetTop, poIterBuffer->get_x_size(),
+				poIterBuffer->get_y_size(), poIterBuffer->get_pixel_data_ref());
+		}
+			
+		oBundleBuffer.SaveBufferToFile(strFile);
+
+		return true;
+	}
+	/*
+	GeoRasterBuffer* Classifier::ClassifyByPredefinedIntervals(int nNumClass, int* panRanges)
 	{
 		int nWidth = m_poGeoBuffer->get_x_size();
 		int nHeight = m_poGeoBuffer->get_y_size();
@@ -346,157 +1021,8 @@ namespace agrigate
 		return poOutputBuffer;
 
 	}
-
-	uint16_t* Classifier::CalcIVIRaster()
-	{
-		if (!m_poGeoBuffer) return 0;
-		int nWidth = m_poGeoBuffer->get_x_size();
-		int nHeight = m_poGeoBuffer->get_y_size();
-		int nBands = m_poGeoBuffer->get_num_bands();
-		unsigned char* panNDVI = (unsigned char*)m_poGeoBuffer->get_pixel_data_ref();
-
-		uint16_t* panIVI = new uint16_t[nWidth * nHeight];
-
-		int t;
-		int n = nWidth*nHeight;
-		for (int i = 0; i < nHeight; i++)
-		{
-			for (int j = 0; j < nWidth; j++)
-			{
-				t = i*nWidth + j;
-				panIVI[t] = 0;
-				for (int b = 0; b < nBands; b++)
-					panIVI[t] += panNDVI[b*n + t];
-			}
-		}
-
-		return panIVI;
-	}
-
-
-	GeoRasterBuffer* Classifier::ClassifySumMethod(int nNumClass, double dblSTDCoeff, RasterBuffer* poMaskBuffer)
-	{
-		int nWidth = m_poGeoBuffer->get_x_size();
-		int nHeight = m_poGeoBuffer->get_y_size();
-		uint16_t* panIVI = CalcIVIRaster();
-		
-		int nBands = m_poGeoBuffer->get_num_bands();
-		
-		unsigned char* panMask = poMaskBuffer != 0 ? (unsigned char*)poMaskBuffer->get_pixel_data_ref() : 
-													(unsigned char*)m_poGeoBuffer->get_pixel_data_ref();
-		
-		double dblMean = 0;
-		double dblSTD = 0;
-		int nNumPixels = 0;
-		int t;
-
-		for (int i = 0; i < nHeight; i++)
-		{
-			for (int j = 0; j < nWidth; j++)
-			{
-				t = i*nWidth + j;
-				if ((panIVI[t] != 0) && (panMask[t]!=0))
-				{
-					nNumPixels++;
-					dblMean += panIVI[t];
-					dblSTD += panIVI[t] * panIVI[t];
-				}
-			}
-		}
-
-		dblMean /= nNumPixels;
-		dblSTD = sqrt((dblSTD / nNumPixels) - dblMean*dblMean);
-		double dblMin = dblMean - dblSTD * dblSTDCoeff;
-		double dblMax = dblMean + dblSTD * dblSTDCoeff;
-		double dblDif = (dblMax - dblMin) / nNumClass;
-
-		unsigned char* panClasses = new unsigned char[nWidth*nHeight];
-		for (int i = 0; i < nHeight; i++)
-		{
-			for (int j = 0; j < nWidth; j++)
-			{
-				t = i*nWidth + j;
-				panClasses[t] = (panIVI[t] == 0 || panMask[t]==0) ? 0 :
-					panIVI[t] > dblMax ? nNumClass :
-					panIVI[t] < dblMin ? 1 :
-					(int)((panIVI[t] - dblMin - 1e-5) / dblDif) + 1;
-			}	
-		}
-		GeoRasterBuffer *poOutputBuffer = new GeoRasterBuffer();
-		poOutputBuffer->CreateBuffer(1, nWidth, nHeight, panClasses);
-		
-		poOutputBuffer->CloneGeoRef(m_poGeoBuffer);
-		
-
-		delete[]panClasses;
-		delete[]panIVI;
-
-		return poOutputBuffer;
-	}
-
-
-	bool Classifier::Init(list<string> listContainers, string strVectorBorder, int nZoom)
-	{
-		if (listContainers.size() == 0) return false;
-
-		ITileContainer* poContainer =  TileContainerFactory::OpenForReading(*listContainers.begin());
-		if (poContainer == 0) return 0;
-		MercatorTileMatrixSet oTMS(poContainer->GetProjType());
-		int z = (nZoom == 0) ? poContainer->GetMaxZoom() : nZoom;
-		poContainer->Close();
-		delete(poContainer);
-		
-		OGRGeometry* poFieldGeometry = VectorOperations::ReadAndTransformGeometry(strVectorBorder,
-																				oTMS.GetTilingSRSRef());
-		OGREnvelope oFieldEnvp;
-		poFieldGeometry->getEnvelope(&oFieldEnvp);
-		
-		int minx, maxx, miny, maxy;
-		oTMS.CalcTileRange(oFieldEnvp, z, minx, miny, maxx, maxy);
-
-		m_poGeoBuffer = new GeoRasterBuffer();
-		m_poGeoBuffer->CreateBuffer(listContainers.size(), 256 * (maxx - minx + 1), 256 * (maxy - miny + 1));
-		
-		int f = -1;
-		for (string strContainer : listContainers)
-		{
-			f++;
-			poContainer = TileContainerFactory::OpenForReading(strContainer);
-			if (poContainer == 0)
-			{
-				delete (poFieldGeometry);
-				return false;
-			}
-
-			for (int x = minx; x <= maxx; x++)
-			{
-				for (int y = miny; y <= maxy; y++)
-				{
-					unsigned char* pabyTileData = 0;
-					unsigned int nSize = 0;
-
-					if (!poContainer->GetTile(z, x, y, pabyTileData, nSize))
-					{
-						delete (poFieldGeometry);
-						return false;
-					}
-
-					RasterBuffer oTileBuffer;
-					oTileBuffer.CreateBufferFromPngData(pabyTileData, nSize);
-					m_poGeoBuffer->SetPixelDataBlock(256*(x-minx), 256*(y-miny), 256, 256, oTileBuffer.get_pixel_data_ref(), f, f);
-					delete[]pabyTileData;
-				}
-			}
-			poContainer->Close();
-			delete(poContainer);
-		}
-		
-		m_poGeoBuffer->SetGeoRef(&oTMS, z, minx, miny, maxx, maxy);
-		m_poGeoBuffer->Clip(poFieldGeometry);
-		delete(poFieldGeometry);
-
-		return true;
-	}
+	*/
+	
 
 	list<string>  NDVIProfile::SelectInputForClassification()
 	{
@@ -637,6 +1163,7 @@ namespace agrigate
 		return true;
 	}
 
+	/*
 	bool Classifier::ClassifyISOCLUSMethod(string strParams, 
 											string strBasePath, 
 											string strISOFile 
@@ -694,7 +1221,254 @@ namespace agrigate
 
 		return true;
 	}
+	(*/
+
+	bool ZoningMap::SaveToVectorFile(string strFileName, OGRSpatialReference* poSRS)
+	{
+		const char *pszDriverName = GMXFileSys::GetExtension(GMXString::MakeLower(strFileName)) == "shp" ?
+			"ESRI Shapefile" : "GeoJSON";
+		GDALDriver *poDriver = GetGDALDriverManager()->GetDriverByName(pszDriverName);
+		GDALDataset *poDS = poDriver->Create(strFileName.c_str(), 0, 0, 0, GDT_Unknown, NULL);
+		if (!poDS) return false;
+
+		OGRLayer *poLayer = poDS->CreateLayer("zoning", poSRS, wkbPolygon, NULL);
+		OGRFieldDefn oField1("NAME", OFTString);
+		OGRFieldDefn oField2("DN", OFTInteger);
+
+		poLayer->CreateField(&oField1);
+		poLayer->CreateField(&oField2);
+
+		SaveToLayer(poLayer, "DN", "", "");
+		
+		GDALClose(poDS);
+
+		return true;
+	}
+
+
+	bool ZoningMap::SaveToLayer(OGRLayer* poLayer, string strDNField,
+		string strZoningMapNameField, string strZoningMapName)
+	{
+		if (!poLayer) return false;
+
+		for (auto iter : m_mapZones)
+		{
+			OGRFeature *poFeature = OGRFeature::CreateFeature(poLayer->GetLayerDefn());
+			poFeature->SetGeometry(iter.second);
+			poFeature->SetField(strDNField == "" ? "DN" : strDNField.c_str(), iter.first);
+			if (strZoningMapNameField!="")
+				poFeature->SetField(strZoningMapNameField.c_str(), strZoningMapName.c_str());
+			if (poLayer->CreateFeature(poFeature) != OGRERR_NONE)
+			{
+				OGRFeature::DestroyFeature(poFeature);
+				return false;
+			}
+			else OGRFeature::DestroyFeature(poFeature);
+		}
+
+		return true;
+	}
+
+	
+	bool ZoningMap::TransformToSRS(OGRSpatialReference* poFromSRS, OGRSpatialReference* poToSRS)
+	{
+		for (auto iter : m_mapZones)
+		{
+			iter.second->assignSpatialReference(poFromSRS);
+			iter.second->transformTo(poToSRS);
+			iter.second->assignSpatialReference(0);
+		}
+
+		return true;
+	}
+	
+	bool ZoningMap::InitDirectly(map<int, OGRMultiPolygon*> mapZones)
+	{
+		Clear();
+		m_mapZones = mapZones;
+		return true;
+	}
+
+
+
+	bool ZoningMap::InitMakingCopy(map<int, OGRMultiPolygon*> mapZones)
+	{
+		Clear();
+		m_mapZones = mapZones;
+		for (auto iter : m_mapZones)
+			iter.second = (OGRMultiPolygon*)iter.second->clone();
+		return true;
+	}
+	
+	
+	bool ZoningMap::Clear()
+	{
+		for (auto iter : m_mapZones)
+			delete(iter.second);
+		m_mapZones.clear();
+		
+		return true;
+	}
+
+	map<int, OGRPolygon*> ZoningMap::FindAllBorderingPolygons(OGRPolygon* poPolygon, double dblThreshold)
+	{
+		map<int, OGRPolygon*> mapBorderingPolygons;
+
+		OGRPolygon* poOneOfPolygons;
+		for (auto iter : m_mapZones)
+		{
+			for (int i = 0; i < iter.second->getNumGeometries(); i++)
+			{
+				poOneOfPolygons = (OGRPolygon*)iter.second->getGeometryRef(i);
+				if (poOneOfPolygons != poPolygon)
+				{
+					if (poPolygon->Touches(poOneOfPolygons) && 
+							(poOneOfPolygons->get_Area()>=dblThreshold))
+						mapBorderingPolygons[iter.first] = poOneOfPolygons;
+				}
+			}
+		}
+
+		return mapBorderingPolygons;
+	}
+
+	bool ZoningMap::Clip(OGRGeometry* poClipGeometry)
+	{
+		for (auto iter : m_mapZones)
+		{
+			OGRGeometry* poIntersection = iter.second->Intersection(poClipGeometry);
+			
+			if (!poIntersection) return false;
+			else
+			{
+				delete(iter.second);
+				m_mapZones[iter.first] = (OGRMultiPolygon*)poIntersection;
+			}
+		}
+		return true;
+	}
+
+
+	bool ZoningMap::FilterByArea(double dblThreshold)
+	{
+		bool bPolygonsCountDecreased = true;
+		while (bPolygonsCountDecreased)
+		{
+			bPolygonsCountDecreased = false;
+			for (auto iter : m_mapZones)
+			{
+				OGRPolygon* poTesteePolygon;
+				for (int i = 0; i < iter.second->getNumGeometries(); i++)
+				{
+					poTesteePolygon = (OGRPolygon*)iter.second->getGeometryRef(i);
+					if (poTesteePolygon->get_Area() < dblThreshold)
+					{
+						map<int, OGRPolygon*> mapBorderingPolygons = 
+							FindAllBorderingPolygons(poTesteePolygon, dblThreshold);
+
+						if (mapBorderingPolygons.size() == 0) continue;
+
+						OGRPolygon* poForUnionPolygon = 0;
+						int nNewIndex = 0xFFFFFF;
+						double dblLargestArea = 0;
+
+						for (auto iter2 : mapBorderingPolygons)
+						{
+							if (abs(iter2.first - iter.first) < abs(iter.first - nNewIndex))
+							{
+								nNewIndex = iter2.first;
+								dblLargestArea = iter2.second->get_Area();
+								poForUnionPolygon = iter2.second;
+							}
+							else if (abs(iter2.first - iter.first) == abs(iter.first - nNewIndex))
+							{
+								if (iter.second->get_Area() > dblLargestArea)
+								{
+									nNewIndex = iter2.first;
+									dblLargestArea = iter2.second->get_Area();
+									poForUnionPolygon = iter2.second;
+								}
+							}
+						}
+																	
+						OGRPolygon* poUnionPolygon = 
+							(OGRPolygon*)poForUnionPolygon->Union(poTesteePolygon);
+						iter.second->removeGeometry(i);
+
+						gmx::VectorOperations::RemoVePolygonFromMultiPolygon(m_mapZones[nNewIndex],
+							poForUnionPolygon);
+
+						m_mapZones[nNewIndex]->addGeometryDirectly(poUnionPolygon);
+						bPolygonsCountDecreased = true;
+						i--;
+					}
+				}
+			}
+		}
+
+		RemoveEmptyZones();
+
+		return true;
+	}
+
+
+	bool ZoningMap::RemoveEmptyZones()
+	{
+		if (m_mapZones.size() == 0) return true; 
+		int* panIndexesToDelete = new int[m_mapZones.size()];
+		int nCountToDelete = 0;
+		for (auto iter : m_mapZones)
+		{
+			if (iter.second->getNumGeometries() == 0)
+			{
+				delete(iter.second);
+				panIndexesToDelete[nCountToDelete] = iter.first;
+				nCountToDelete++;
+			}
+		}
+
+		for (int i = 0; i < nCountToDelete; i++)
+			m_mapZones.erase(panIndexesToDelete[i]);
+
+
+		return true;
+	}
+
+
+
+	bool ZoningMapCollection::SaveToVectorFile(string strFileName)
+	{
+		const char *pszDriverName = GMXFileSys::GetExtension(GMXString::MakeLower(strFileName)) == "shp" ?
+			"ESRI Shapefile" : "GeoJSON";
+		GDALDriver *poDriver = GetGDALDriverManager()->GetDriverByName(pszDriverName);
+		GDALDataset *poDS = poDriver->Create(strFileName.c_str(), 0, 0, 0, GDT_Unknown, NULL);
+		if (!poDS) return false;
+
+		OGRLayer *poLayer = poDS->CreateLayer("zoning", m_poSRS, wkbPolygon, NULL);
+		OGRFieldDefn oField1("NAME", OFTString);
+		OGRFieldDefn oField2("DN", OFTInteger);
+
+		poLayer->CreateField(&oField1);
+		poLayer->CreateField(&oField2);
+
+		for (auto iter : m_mapZoningCollection)
+		{
+			iter.second->SaveToLayer(poLayer, "DN", "NAME", iter.first);
+		}
+
+		GDALClose(poDS);
+		
+		return true;
+	}
+
+	map<string, pair<OGRGeometry*, list<string>>>*
+		ZoningMapCollectionProcessor::ParseConsoleInput(string strTextFile, string strVectorFile)
+	{
+		map<string, pair<OGRGeometry*, list<string>>>* pomapParsedInput =
+			new map<string, pair<OGRGeometry*, list<string>>>();
+
+
+		return pomapParsedInput;
+	}
+
 }
-
-
-

@@ -1,35 +1,96 @@
 #pragma once
 #include "stdafx.h"
-#include "isoclus_v2/Image.h"
+//#include "isoclus_v2/Image.h"
 
 using namespace gmx;
 
 namespace agrigate
 {
+	class ClassifiedRasterBuffer;
+
+
+	//ToDo
+	//Clip: add buffer offset
+	//Polygonize: intersect with clipline
+	//
+	//
+	//
+
 	class GeoRasterBuffer : public gmx::RasterBuffer
 	{
 	public:
-		GeoRasterBuffer(){ m_poSRS = 0; }
-		~GeoRasterBuffer(){ if (m_poSRS != 0) OSRRelease(m_poSRS); }
-		bool SetGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy);
-		bool Clip (OGRGeometry* poClipGeom);
-		bool Clip(string strVectorFile, double dblPixelOffset = 0);
-		bool Polygonize(string strOutputVectorFile);
+		//PolygonizeRanges
+		//VectorOperations::SimplifyPolygons
+		//VectorOperations::CensorSmallPolygons
 		
-		GeoRasterBuffer* Burn(string strVectorFile, double dblPixelOffset = 0);
+		static GeoRasterBuffer* InitFromNDVITilesList(list<string> listNDVITiles, 
+			OGRGeometry* poVectorMask, double dblPixelBuffer = 0, int nZoom = 0);
+		
+		
+		//assumed: data_type_==GDT_UInt16
+		ClassifiedRasterBuffer* ClassifyByPredefinedIntervals(int nNumClass, int* panIntervals);
+		
+		//assumed: data_type_==GDT_UInt16
+		ClassifiedRasterBuffer* ClassifyEqualArea(int nNumClass, int* &panIntervals);
+
+		//assumed: data_type_==GDT_UInt16
+		ClassifiedRasterBuffer* ClassifyEqualIntervals(int nNumClass, int* &panIntervals, double dblSTDCoeff = 0);
+	
+		
+		GeoRasterBuffer(){ m_poSRS = 0;}
+		~GeoRasterBuffer()
+		{ 
+			if (m_poSRS != 0) OSRRelease(m_poSRS);
+		}
+		bool SetTMSGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy);
+		bool Clip(OGRGeometry* poClipGeom, double dblPixelBuffer = 0);
+		bool Clip(string strVectorFile, double dblPixelOffset = 0);
+	
+		bool PolygonizePixels(string strOutputVectorFile, bool bSaveTo4326 = false);
+		
+
+		GeoRasterBuffer* BurnVectorMask(OGRGeometry* poClipGeom, double dblPixelOffset = 0);
 		
 		bool SaveGeoRefFile(string strOutput);
-		GDALDataset* CreateGDALDataset(bool bCopyData = true);
+		GDALDataset* CreateInMemGDALDataset(bool bCopyData = true);
 		bool CloneGeoRef(GeoRasterBuffer* poSrcBuffer);
 		OGRSpatialReference* GetSRSRef() { return m_poSRS; };
-	
+		
+		
+		//OGRMultiPolygon* PolygonizeRange(int nMinValue, int nMaxValue);
+		map<int, OGRMultiPolygon*> Polygonize(int nOffset = 1, int nStep = 1, int nUpperBound = 0);
+		OGREnvelope GetEnvelope(){ return m_oEnvp; };
+		double GetPixelSize(){ return m_dblRes; };
+
+
+		
+		//bool CalculateContour(int nMinValue, int nMaxValue, OGRGeometry* &poSRSGeometry);
+		//bool CalculateContour(int nMinValue, int nMaxValue, OGRGeometry* &poPixelSpaceGeometry);
+		//bool CalculateContours(...);
 	protected:
+		
+		template <typename T> GeoRasterBuffer* CreateMaskBufferByRanges(
+			T type,
+			int nOffset,
+			int nStep,
+			int nUpperBound);
+		template <typename T> GeoRasterBuffer* CreateMaskBufferByRange(T type, int nMinValue, int nMaxValue);
+		//OGRGeometry* Clip(OGRGeometry* poClipGeom);
 		bool CalcGeoTransform(double *padblGeoTransform);
+		/*		
+			bool GeoRasterBuffer::TraceEdge(int nMinValue,
+			int nMaxValue,
+			int nX0,
+			int nY0,
+			int nX1,
+			int nY1,
+			list<pair<int, int>> &listEdgeLine);
+			*/
 
 	protected:
 		OGRSpatialReference* m_poSRS;
 		double m_dblRes;
-		OGREnvelope m_oEnvp;		
+		OGREnvelope m_oEnvp;
 	};
 
 	class Classifier
@@ -38,25 +99,60 @@ namespace agrigate
 		//georeference
 		Classifier() { m_poGeoBuffer = 0; };
 		~Classifier(){ delete(m_poGeoBuffer); };
-		bool Init (list<string> listContainers, string strVectorBorder, int nZoom = 0);
-		//GeoRasterBuffer* Classify (params...);
-		bool ClassifyISOCLUSMethod(string strParams,string strBasePath,string strISOFile);
+		
+		//bool ClassifyISOCLUSMethod(string strParams,string strBasePath,string strISOFile);
 		//input: multiband raster, numclasses //output - classified array
 		//init parameters and call method ISOCLUS::Image::RunISOCLUS()
 
-
-		GeoRasterBuffer* ClassifySumMethod(int nNumClass, double dblSTDCoeff, RasterBuffer* poMaskBuffer = 0);
-		GeoRasterBuffer* ClassifySumMethod(int nNumClass, int* panRanges);
-
-
-		GeoRasterBuffer* GetGeoRasterBufferRef() { return m_poGeoBuffer; };
-		static bool ApplyMajorityFilter(unsigned char* pabClasses, int w, int h, int nClasses, int nWinSize);
-		//static bool DilationFilter(unsigned char* pabClasses, int w, int h, int nClasses, int nWinSize);
-	protected:
-		uint16_t* CalcIVIRaster();
-
+				
+		//GeoRasterBuffer* GetGeoRasterBufferRef() { return m_poGeoBuffer; };
+		//static bool ApplyMajorityFilter(unsigned char* pabClasses, int w, int h, int nClasses, int nWinSize);
+		static bool ConvertPixelsToPolygons(int nZ, string strNDVI, string strOutputVector);
+	
 	protected:
 		GeoRasterBuffer* m_poGeoBuffer;
+	};
+
+	
+	//assumed: data_type_==GDT_Byte
+	class ClassifiedRasterBuffer : public GeoRasterBuffer
+	{
+	public:
+		//ToDo
+		ClassifiedRasterBuffer(int nNumClasses)
+		{ 
+			m_nClasses = nNumClasses; 
+			GeoRasterBuffer();
+		};
+		
+		bool ApplyMajorityFilter(int nWinSize, unsigned char* pabInterpolationMask = 0);
+		int GetNumClasses() { return m_nClasses; };
+		bool ReplaceByInterpolatedValues(OGRGeometry* poVector, double dblPixelInward,
+			double dblPixelOutward);
+		bool AdjustExtentToClippedArea();
+		
+	protected:
+		int m_nClasses;
+	};
+
+	class GeoRasterBufferCollection
+	{
+		OGREnvelope CalculateBundleEnvelope();
+		~GeoRasterBufferCollection();
+		
+		static GeoRasterBufferCollection* InitBundleFromFileInput(string strNDVIFilesTable,
+			string strVectorFile, string strBasePath, int nZoom = 13 );
+		bool Init(map<string,list<string>> mapNDVITiles, 
+			map<string,OGRGeometry*> mapClipGeoms, int nZoom = 13);
+
+		//ToDo
+		//Classify
+		//PolygonizeToFile
+
+		bool SaveToFile(string strFile, GDALColorTable *poColTab = 0);
+	
+
+		map<string, GeoRasterBuffer*> m_mapBuffers;
 	};
 
 	struct ImageMeta
@@ -66,6 +162,7 @@ namespace agrigate
 		int nDOY;
 		double dblMean;
 	};
+
 
 	class NDVIProfile
 	{
@@ -82,5 +179,88 @@ namespace agrigate
 		list<ImageMeta> m_listMetadata;
 	};
 
+	class ZoningMap
+	{
+	public:
+		ZoningMap(){};
+		ZoningMap(map<int, OGRMultiPolygon*> mapZones)
+		{
+			InitMakingCopy(mapZones);
+		};
+
+		bool TransformToSRS(OGRSpatialReference* poFromSRS, OGRSpatialReference* poToSRS);
+		bool InitDirectly(map<int, OGRMultiPolygon*> mapZones);
+		bool InitMakingCopy(map<int, OGRMultiPolygon*> mapZones);
+		bool Clear();
+		~ZoningMap(){ Clear();};
+
+		bool SaveToLayer(OGRLayer* poLayer, string strDNField, 
+						string strZoningMapNameField, string strZoningMapName);
+		
+		bool SaveToVectorFile(string strFileName, OGRSpatialReference* poSRS=0);
+		
+		bool FilterByArea(double dblThreshold);
+
+		bool Clip(OGRGeometry* poClipGeometry);
+	 
+	
+	protected:
+		map<int, OGRPolygon*> FindAllBorderingPolygons(OGRPolygon* poPolygon, double dblThreshold=0);
+		bool RemoveEmptyZones();
+
+	protected:
+		map<int, OGRMultiPolygon*> m_mapZones;
+	};
+
+	class ZoningMapCollection  //ZoningMapCollection
+	{
+	public:
+		ZoningMapCollection(OGRSpatialReference* poSRS)
+		{
+			m_poSRS = poSRS->Clone();
+		};
+
+		~ZoningMapCollection()
+		{
+			for (auto iter : m_mapZoningCollection)
+				delete(iter.second);
+			delete(m_poSRS);
+		};
+		
+		bool SaveToVectorFile(string strFileName);
+		
+		bool AddZoningMap(string strZoningName, ZoningMap* poZM)
+		{
+			m_mapZoningCollection[strZoningName] = poZM;
+			return true;
+		};
+
+	protected:
+		map<string,ZoningMap*> m_mapZoningCollection;
+		OGRSpatialReference* m_poSRS;
+	};
+
+	class ClassifiedRastersCollection
+	{
+	
+
+	};
+
+	class ZoningMapCollectionProcessor
+	{
+		static map<string, pair<OGRGeometry*, list<string>>>* 
+			ParseConsoleInput(string strTextFile, string strVectorFile);
+		//...
+		
+	protected:
+
+	protected:
+		map<string,pair<OGRGeometry*,list<string>>> m_mapCollectionData;
+	};
+
+	//create CollectionConsoleInput
+	//loop geometries and run processing
+	//write output vectors into ZoningMapCollection object
+	//write output classified rasters into ClassifiedRasterCollection object
 }
 
