@@ -27,17 +27,17 @@ namespace agrigate
 			OGRGeometry* poVectorMask, double dblPixelBuffer = 0, int nZoom = 0);
 		
 		
-		//assumed: data_type_==GDT_UInt16
+		//assumed: data_type_==GDT_Int16
 		ClassifiedRasterBuffer* ClassifyByPredefinedIntervals(int nNumClass, int* panIntervals);
 		
-		//assumed: data_type_==GDT_UInt16
+		//assumed: data_type_==GDT_Int16
 		ClassifiedRasterBuffer* ClassifyEqualArea(int nNumClass, int* &panIntervals);
 
-		//assumed: data_type_==GDT_UInt16
+		//assumed: data_type_==GDT_Int16
 		ClassifiedRasterBuffer* ClassifyEqualIntervals(int nNumClass, int* &panIntervals, double dblSTDCoeff = 0);
 	
 		
-		GeoRasterBuffer(){ m_poSRS = 0;}
+		GeoRasterBuffer(){ m_poSRS = 0; m_nNDV = 0; }
 		~GeoRasterBuffer()
 		{ 
 			if (m_poSRS != 0) OSRRelease(m_poSRS);
@@ -46,6 +46,7 @@ namespace agrigate
 		bool Clip(OGRGeometry* poClipGeom, double dblPixelBuffer = 0);
 		bool Clip(string strVectorFile, double dblPixelOffset = 0);
 	
+		//assume: data_tape_ == GDT_Byte
 		bool PolygonizePixels(string strOutputVectorFile, bool bSaveTo4326 = false);
 		
 
@@ -58,7 +59,12 @@ namespace agrigate
 		
 		
 		//OGRMultiPolygon* PolygonizeRange(int nMinValue, int nMaxValue);
-		map<int, OGRMultiPolygon*> Polygonize(int nOffset = 1, int nStep = 1, int nUpperBound = 0);
+		
+		//assumed: data_type_==GDT_Int16
+		map<int, OGRMultiPolygon*> Polygonize(int nOffset, int nStep, int nUpperBound);
+
+		map<int, OGRMultiPolygon*> Polygonize();
+
 		OGREnvelope GetEnvelope(){ return m_oEnvp; };
 		double GetPixelSize(){ return m_dblRes; };
 
@@ -69,13 +75,15 @@ namespace agrigate
 		//bool CalculateContours(...);
 	protected:
 		
-		template <typename T> GeoRasterBuffer* CreateMaskBufferByRanges(
-			T type,
-			int nOffset,
-			int nStep,
-			int nUpperBound);
-		template <typename T> GeoRasterBuffer* CreateMaskBufferByRange(T type, int nMinValue, int nMaxValue);
+		//template <typename T> GeoRasterBuffer* CreateMaskBufferByRanges(
+		//	T type,
+		//	int nOffset,
+		//	int nStep,
+		//	int nUpperBound);
+
+		//template <typename T> GeoRasterBuffer* CreateMaskBufferByRange(T type, int nMinValue, int nMaxValue);
 		//OGRGeometry* Clip(OGRGeometry* poClipGeom);
+		map<int, OGRMultiPolygon*> Polygonize(GeoRasterBuffer* poGeoBuffer);
 		bool CalcGeoTransform(double *padblGeoTransform);
 		/*		
 			bool GeoRasterBuffer::TraceEdge(int nMinValue,
@@ -91,6 +99,7 @@ namespace agrigate
 		OGRSpatialReference* m_poSRS;
 		double m_dblRes;
 		OGREnvelope m_oEnvp;
+		int m_nNDV;
 	};
 
 	class Classifier

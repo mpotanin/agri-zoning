@@ -62,6 +62,8 @@ const GMXOptionDescriptor asDescriptors[] =
 int nExamples = 2;
 const string astrUsageExamples[] =
 {
+	"zoning -v field.geojson -sid \"-S2A_20180811_080611_369_38UMC_ndvi.tiles,S2B_20180816_080559_274_38UMC_ndvi.tiles"
+			" -o_png zones.png -o_png chveg_map.png -m area",
 	"zoning -v field.geojson -sid \"NDVI/LC81720282014078LGN00_ndvi.tiles,NDVI/S2A_L1C_20160619_124_ndvi.tiles,"
 	        "NDVI/LC81720282017102LGN00_ndvi.tiles\" -o_png zones.png -o_geojson zones.geojson -m area",
 	"zoning -v field.geojson -sid \"NDVI/LC81720282014078LGN00_ndvi.tiles,NDVI/S2A_L1C_20160619_124_ndvi.tiles,"
@@ -165,11 +167,10 @@ int main(int nArgs, char* argv[])
 		listTileContainers = GMXString::SplitCommaSeparatedText(oOptionParser.GetOptionValue("-sid"));
 		if (strAliasPath != "")
 		{
-			for (list<string>::iterator iter = listTileContainers.begin(); iter != listTileContainers.end(); iter++)
+			for (string iter : listTileContainers)
 			{
-				if ((*iter).find(strAliasPath) == 0)
-					(*iter) = strRealPath + (*iter).substr(strAliasPath.size());
-
+				if (iter.find(strAliasPath) == 0)
+					iter = strRealPath + iter.substr(strAliasPath.size());
 			}
 		}
 	}
@@ -192,7 +193,16 @@ int main(int nArgs, char* argv[])
 	
 	GeoRasterBuffer* poGeoBuffer = GeoRasterBuffer::InitFromNDVITilesList(listTileContainers, 
 		poVecBorder,-1,nZoom);
+	
+	if (!poGeoBuffer)
+	{
+		cout << "ERROR: InitFromNDVITilesList\n";
+		return 5;
+	}
 
+	//debug
+	//poGeoBuffer->SaveGeoRefFile("F:\\mpotanin\\byukreevka\\123.tif");
+	//end-debug
 
 	int* panIntervals = 0;
 	ClassifiedRasterBuffer* poClassifiedBuffer =
@@ -217,9 +227,12 @@ int main(int nArgs, char* argv[])
 
 	//poClassifiedBuffer->SaveGeoRefFile("F:\\mpotanin\\byukreevka\\field6_IVI_5class_interpolate_2.tif");
 	
+	//debug
+	///*
 	if (oOptionParser.GetOptionValue("-o_geojson") != "")
 	{
-		map<int, OGRMultiPolygon*> mapZones = poClassifiedBuffer->Polygonize(1, 1, nClasses);
+
+		map<int, OGRMultiPolygon*> mapZones = poClassifiedBuffer->Polygonize();
 		ZoningMap oZM;
 		oZM.InitDirectly(mapZones);
 		oZM.Clip(poVecBorder);
@@ -235,8 +248,8 @@ int main(int nArgs, char* argv[])
 		//oZM.FilterByArea(5000);
 		//oZM.SaveToFile("F:\\mpotanin\\byukreevka\\zones3_clipped_nofilt_field6.shp", "");
 	}
-
-	
+	//*/
+	//end-debug	
 
 
 	GDALColorTable *poColTab = new GDALColorTable(GPI_RGB);
@@ -285,7 +298,9 @@ int main(int nArgs, char* argv[])
 	}
 
 
+	//debug
 	poClassifiedBuffer->AdjustExtentToClippedArea();
+	//end-debug
 
 	poClassifiedBuffer->set_color_table(poColTab);
 	poClassifiedBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
