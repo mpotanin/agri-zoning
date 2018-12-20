@@ -205,10 +205,43 @@ int main(int nArgs, char* argv[])
 	//end-debug
 
 	int* panIntervals = 0;
-	ClassifiedRasterBuffer* poClassifiedBuffer =
-		GMXString::MakeLower(oOptionParser.GetOptionValue("-m")) == "intervals" ?
-		poGeoBuffer->ClassifyEqualIntervals(nClasses, panIntervals, dblSTDCoeff) :
-		poGeoBuffer->ClassifyEqualArea(nClasses, panIntervals);
+	string strClassifyMethod = oOptionParser.GetOptionValue("-m");
+	ClassifiedRasterBuffer* poClassifiedBuffer = 0;
+	if (strClassifyMethod == "intervals")
+		poClassifiedBuffer = poGeoBuffer->ClassifyEqualIntervals(nClasses, panIntervals, dblSTDCoeff);
+	else if (strClassifyMethod == "area" || strClassifyMethod == "")
+		poClassifiedBuffer = poGeoBuffer->ClassifyEqualArea(nClasses, panIntervals);
+	else
+	{
+		list<string> listInterval = GMXString::SplitCommaSeparatedText(strClassifyMethod);
+		if (listInterval.size() != 2)
+		{
+			cout << "ERROR: -m parameter is not valid: " << strClassifyMethod << endl;
+			return 2;
+		}
+		
+		panIntervals = new int[4];
+		int i = 1;
+		panIntervals[0] = 0;
+		panIntervals[3] = 100;
+		for (auto str : listInterval)
+		{
+			panIntervals[i] = (int)(100 * atof(str.c_str()) +0.5);
+			if (panIntervals[i] <= 0 && panIntervals[i] > 99)
+			{
+				cout << "ERROR: -m parameter is not valid: " << strClassifyMethod << endl;
+				return 2;
+			}
+			i++;
+		}
+
+		if (panIntervals[2] <= panIntervals[1])
+		{
+			cout << "ERROR: -m parameter is not valid: " << strClassifyMethod << endl;
+			return 2;
+		}
+		poClassifiedBuffer = poGeoBuffer->ClassifyByPredefinedIntervals(nClasses, panIntervals);
+	}
 	
 
 	if (poClassifiedBuffer == 0)
