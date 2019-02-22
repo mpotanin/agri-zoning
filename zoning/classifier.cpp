@@ -4,6 +4,7 @@
 
 namespace agrigate
 {
+
 	GeoRasterBuffer*  GeoRasterBuffer::InitFromNDVITilesList(
 		list<string> listNDVITiles, 
 		OGRGeometry* poVectorMask, 
@@ -242,7 +243,7 @@ namespace agrigate
 	bool GeoRasterBuffer::Clip(string strVectorFile, double dblPixelOffset)
 	{
 		OGRGeometry* poClipGeometry =
-			VectorOperations::ReadAndTransformGeometry(strVectorFile, GetSRSRef());
+      VectorOperations::ReadAllIntoSingleMultiPolygon(strVectorFile, GetSRSRef());
 		if (!poClipGeometry) return false;
 
 		bool bResult = Clip(poClipGeometry,dblPixelOffset);
@@ -252,6 +253,7 @@ namespace agrigate
 		return bResult;
 	}
 
+  
 	bool  ClassifiedRasterBuffer::AdjustExtentToClippedArea()
 	{
 		int nTop=0, nLeft=0, nRight=0, nBottom=0;
@@ -298,8 +300,10 @@ namespace agrigate
 
 		void* panPixelBlock = 
 			GetPixelDataBlock(nLeft, nTop, x_size_ - nLeft - nRight, y_size_ - nTop - nBottom);
-		ClearPixelData();
-		p_pixel_data_ = panPixelBlock;
+
+    ClearBuffer();
+
+    p_pixel_data_ = panPixelBlock;
 
 		x_size_ -= (nLeft + nRight);
 		y_size_ -= (nTop + nBottom);
@@ -312,6 +316,7 @@ namespace agrigate
 		
 		return true;
 	}
+  
 
 	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyByPredefinedIntervals(int nNumClass, int* panIntervals)
 	{
@@ -480,68 +485,9 @@ namespace agrigate
 		}
 		else return poRasterizedVector;
 	}
-	
-	bool GeoRasterBuffer::PolygonizePixels(string strOutputVectorFile, bool bSaveTo4326)
-	{
-		
-		GDALDriver *poDriver = GMXFileSys::GetExtension(strOutputVectorFile) == "shp" ?
-			GetGDALDriverManager()->GetDriverByName("ESRI Shapefile") :
-			GetGDALDriverManager()->GetDriverByName("GeoJSON");
-		GDALDataset *poDS = poDriver->Create(strOutputVectorFile.c_str(), 0, 0, 0, GDT_Unknown, NULL);
-		if (poDS == NULL)
-		{
-			printf("Creation of output file failed.\n");
-			exit(1);
-		}
 
-		OGRSpatialReference oSRS4326;
-		oSRS4326.SetWellKnownGeogCS("WGS84");
 
-		OGRLayer *poLayer = poDS->CreateLayer("pixels", bSaveTo4326 ? &oSRS4326 : this->m_poSRS, wkbPolygon, NULL);
-		OGRFieldDefn oField("DN", OFTInteger);
-		poLayer->CreateField(&oField);
-		int t = 0;
-		int val = 0;
-		int n = x_size_*y_size_;
-		for (int i = 0; i < x_size_; i++)
-		{
-			for (int j = 0; j < y_size_; j++)
-			{
-				t = x_size_*j + i;
-				val = 0;
-				for (int b = 0; b < num_bands_; b++)
-					val += ((unsigned char*)p_pixel_data_)[b*n + t];
-				if (val == 0) continue;
-				OGRLinearRing oPixelRing;
-				oPixelRing.addPoint(m_oEnvp.MinX+i*m_dblRes,m_oEnvp.MaxY-j*m_dblRes);
-				oPixelRing.addPoint(m_oEnvp.MinX + (i+1)*m_dblRes, m_oEnvp.MaxY - j*m_dblRes);
-				oPixelRing.addPoint(m_oEnvp.MinX + (i+1)*m_dblRes, m_oEnvp.MaxY - (j+1)*m_dblRes);
-				oPixelRing.addPoint(m_oEnvp.MinX + i*m_dblRes, m_oEnvp.MaxY - (j+1)*m_dblRes);
-				oPixelRing.closeRings();
-				OGRPolygon	*poPixelPoly = new OGRPolygon();
-				poPixelPoly->addRing(&oPixelRing);
-				OGRFeature *poFeature = OGRFeature::CreateFeature(poLayer->GetLayerDefn());
-				poFeature->SetField("DN", val / num_bands_);
-				
-				if (bSaveTo4326)
-				{
-					poPixelPoly->assignSpatialReference(this->m_poSRS);
-					poPixelPoly->transformTo(&oSRS4326);
-					poPixelPoly->assignSpatialReference(0);
-				}
-
-				poFeature->SetGeometry(poPixelPoly);
-				poLayer->CreateFeature(poFeature);
-				OGRFeature::DestroyFeature(poFeature);
-			}
-		}
-			
-		GDALClose(poDS);
-	
-		return true;
-	}
-	
-	bool GeoRasterBuffer::Clip(OGRGeometry* poClipGeom, double dblPixelOffset)
+ 	bool GeoRasterBuffer::Clip(OGRGeometry* poClipGeom, double dblPixelOffset)
 	{
 				
 		double padblGeoTransform[6];
@@ -848,6 +794,121 @@ namespace agrigate
 
 	}
 	*/
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
+                                              OGRGeometry* poClipMask,
+                                              bool bSaveTo4326)
+{
+  ClassifiedRasterBuffer* poClippedBuffer = new ClassifiedRasterBuffer(this->m_nClasses);
+  poClippedBuffer->CreateBuffer(this);
+  poClippedBuffer->CloneGeoRef(this);
+
+  poClippedBuffer->Clip(poClipMask);
+  poClippedBuffer->AdjustExtentToClippedArea();
+
+
+  GDALDriver *poDriver = GMXFileSys::GetExtension(strOutputVectorFile) == "shp" ?
+    GetGDALDriverManager()->GetDriverByName("ESRI Shapefile") :
+    GetGDALDriverManager()->GetDriverByName("GeoJSON");
+  GDALDataset *poDS = poDriver->Create(strOutputVectorFile.c_str(), 0, 0, 0, GDT_Unknown, NULL);
+  if (poDS == NULL)
+  {
+    printf("Creation of output file failed.\n");
+    exit(1);
+  }
+
+  OGRSpatialReference oSRS4326;
+  oSRS4326.SetWellKnownGeogCS("WGS84");
+
+  OGRLayer *poLayer = poDS->CreateLayer("pixels", bSaveTo4326 ? &oSRS4326 : this->m_poSRS, wkbPolygon, NULL);
+  OGRFieldDefn oFieldDN("DN", OFTInteger);
+  poLayer->CreateField(&oFieldDN);
+  OGRFieldDefn oFieldFRAC("FRACTION", OFTReal);
+  poLayer->CreateField(&oFieldFRAC);
+
+
+  int t = 0;
+  int val = 0;
+  int n = x_size_*y_size_;
+  for (int i = 0; i < x_size_; i++)
+  {
+    for (int j = 0; j < y_size_; j++)
+    {
+      t = x_size_*j + i;
+      val = 0;
+      for (int b = 0; b < num_bands_; b++)
+        val += ((unsigned char*)p_pixel_data_)[b*n + t];
+      if (val == 0) continue;
+      OGRLinearRing oPixelRing;
+      oPixelRing.addPoint(m_oEnvp.MinX + i*m_dblRes, m_oEnvp.MaxY - j*m_dblRes);
+      oPixelRing.addPoint(m_oEnvp.MinX + (i + 1)*m_dblRes, m_oEnvp.MaxY - j*m_dblRes);
+      oPixelRing.addPoint(m_oEnvp.MinX + (i + 1)*m_dblRes, m_oEnvp.MaxY - (j + 1)*m_dblRes);
+      oPixelRing.addPoint(m_oEnvp.MinX + i*m_dblRes, m_oEnvp.MaxY - (j + 1)*m_dblRes);
+      oPixelRing.closeRings();
+      OGRPolygon	*poPixelPoly = (OGRPolygon*)OGRGeometryFactory::createGeometry(wkbPolygon);
+      poPixelPoly->addRing(&oPixelRing);
+      
+      if (!poClipMask->Intersects(poPixelPoly))
+      {
+        delete(poPixelPoly);
+        continue;
+      }
+      else
+      {
+        OGRFeature *poFeature = OGRFeature::CreateFeature(poLayer->GetLayerDefn());
+        poFeature->SetField("DN", val / num_bands_);
+
+        if (poClipMask->Contains(poPixelPoly))
+          poFeature->SetField("FRACTION", 1.0);
+        else
+        {
+          OGRGeometry* poPixelCut = poClipMask->Intersection(poPixelPoly);
+          if (!poPixelCut)
+            poFeature->SetField("FRACTION", 1.0);
+          else
+          {
+            double dblCutArea = 0.0;
+            switch (poPixelCut->getGeometryType())
+            {
+              case wkbPolygon:
+                dblCutArea = ((OGRPolygon*)poPixelCut)->get_Area();
+                break;
+              case wkbMultiPolygon:
+                dblCutArea = ((OGRMultiPolygon*)poPixelCut)->get_Area();
+                break;
+              default:
+                dblCutArea = poPixelPoly->get_Area();
+                break;
+            }
+            delete(poPixelCut);
+            poFeature->SetField("FRACTION", dblCutArea / poPixelPoly->get_Area());
+         }
+       }
+
+        if (bSaveTo4326)
+        {
+          poPixelPoly->assignSpatialReference(this->m_poSRS);
+          poPixelPoly->transformTo(&oSRS4326);
+          poPixelPoly->assignSpatialReference(0);
+        }
+
+        poFeature->SetGeometryDirectly(poPixelPoly);
+        poLayer->CreateFeature(poFeature);
+        OGRFeature::DestroyFeature(poFeature);
+      }
+    }
+  }
+
+  GDALClose(poDS);
+
+  delete(poClippedBuffer);
+  return true;
+}
+
+
+
 
 
 	bool ClassifiedRasterBuffer::ReplaceByInterpolatedValues(OGRGeometry* poVector,
@@ -1445,9 +1506,9 @@ namespace agrigate
 							(OGRPolygon*)poForUnionPolygon->Union(poTesteePolygon);
 						iter.second->removeGeometry(i);
 
-						gmx::VectorOperations::RemoVePolygonFromMultiPolygon(m_mapZones[nNewIndex],
-							poForUnionPolygon);
-
+            gmx::VectorOperations::RemovePolygonFromMultiPolygon(m_mapZones[nNewIndex],
+							                                                   poForUnionPolygon);
+            
 						m_mapZones[nNewIndex]->addGeometryDirectly(poUnionPolygon);
 						bPolygonsCountDecreased = true;
 						i--;

@@ -56,7 +56,7 @@ const GMXOptionDescriptor asDescriptors[] =
 	{ "-z", 0, 0, "zoom (default = 13)" },
 	{ "-ranges", 0, 0, "intervals to split" },
 	{ "-col", 0, 1, "color table values" },
-	{"-o_p2p",0, 0, "output vector file for pixels to polygons operation"}
+	{"-o_grid",0, 0, "output vector grid"}
 };
 
 int nExamples = 2;
@@ -187,10 +187,10 @@ int main(int nArgs, char* argv[])
 	gmx::MercatorTileMatrixSet oMercTMS;
 
 
-	OGRGeometry* poVecBorder = gmx::VectorOperations::ReadAndTransformGeometry(
+  OGRGeometry* poVecBorder = gmx::VectorOperations::ReadAllIntoSingleMultiPolygon(
 		oOptionParser.GetOptionValue("-v"), oMercTMS.GetTilingSRSRef());
 
-	
+ 	
 	GeoRasterBuffer* poGeoBuffer = GeoRasterBuffer::InitFromNDVITilesList(listTileContainers, 
 		poVecBorder,-1,nZoom);
 	
@@ -200,10 +200,7 @@ int main(int nArgs, char* argv[])
 		return 5;
 	}
 
-	//debug
-	//poGeoBuffer->SaveGeoRefFile("F:\\mpotanin\\byukreevka\\123.tif");
-	//end-debug
-
+	
 	int* panIntervals = 0;
 	string strClassifyMethod = oOptionParser.GetOptionValue("-m");
 	ClassifiedRasterBuffer* poClassifiedBuffer = 0;
@@ -254,14 +251,11 @@ int main(int nArgs, char* argv[])
 	
 	for (int i = 0; i < nMajorityFilterNumRun; i++)
 		poClassifiedBuffer->ApplyMajorityFilter(nWinSize);
-		
-	//debug
-	
 
-	//poClassifiedBuffer->SaveGeoRefFile("F:\\mpotanin\\byukreevka\\field6_IVI_5class_interpolate_2.tif");
+  poClassifiedBuffer->AdjustExtentToClippedArea();
 	
-	//debug
-	///*
+  
+
 	if (oOptionParser.GetOptionValue("-o_geojson") != "")
 	{
 
@@ -281,8 +275,8 @@ int main(int nArgs, char* argv[])
 		//oZM.FilterByArea(5000);
 		//oZM.SaveToFile("F:\\mpotanin\\byukreevka\\zones3_clipped_nofilt_field6.shp", "");
 	}
-	//*/
-	//end-debug	
+
+
 
 
 	GDALColorTable *poColTab = new GDALColorTable(GPI_RGB);
@@ -331,16 +325,48 @@ int main(int nArgs, char* argv[])
 	}
 
 
-	//debug
-	poClassifiedBuffer->AdjustExtentToClippedArea();
-	//end-debug
-
 	poClassifiedBuffer->set_color_table(poColTab);
 	poClassifiedBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
 		oOptionParser.GetOptionValue("-o_png") : oOptionParser.GetOptionValue("-o_tif"));
 
+  
+  if (oOptionParser.GetOptionValue("-o_grid") != "")
+  {
+    OGRFeature** paoFeatures = 0;
+    int nFeatures = VectorOperations::ReadAllFeatures(oOptionParser.GetOptionValue("-v"), 
+                                                      paoFeatures, 
+                                                      oMercTMS.GetTilingSRSRef());
 
+    double* padblClassCount = new double[poClassifiedBuffer->GetNumClasses()];
+    for (int i = 0; i<poClassifiedBuffer->GetNumClasses(); i++)
+      padblClassCount[i]=0.;
 
+    for (int i = 0; i < nFeatures; i++)
+    {
+      string strGridFile = GMXFileSys::GetAbsolutePath(oOptionParser.GetOptionValue("-o_grid"),
+                                                      "grid_field_" + GMXString::ConvertIntToString(i+1) + ".shp");
+      poClassifiedBuffer->PolygonizePixels(strGridFile, paoFeatures[i]->GetGeometryRef(), true);
+      OGRFeature::DestroyFeature(paoFeatures[i]);
+
+      OGRFeature** paoCellFeatures;
+      int nCells = VectorOperations::ReadAllFeatures(strGridFile,paoCellFeatures);
+      for (int j = 0; j < nCells; j++)
+      {
+        padblClassCount[paoCellFeatures[j]->GetFieldAsInteger("DN")-1]+=paoCellFeatures[j]->GetFieldAsDouble("FRACTION");
+        delete(paoCellFeatures[j]);
+      }
+      delete[]paoCellFeatures;
+     
+    }
+    string strClassesCountFile = GMXFileSys::GetAbsolutePath(oOptionParser.GetOptionValue("-o_grid"),"classes_count.txt");
+    FILE* fp = fopen(strClassesCountFile.c_str(), "w");
+    for (int i = 0; i<poClassifiedBuffer->GetNumClasses();i++)
+      fprintf(fp, "%.2lf\n", padblClassCount[i]);
+    fclose(fp);
+
+    delete[]paoFeatures;
+    delete[]padblClassCount;
+  }
 
 
 	delete[]panIntervals;
@@ -349,88 +375,6 @@ int main(int nArgs, char* argv[])
 	delete(poGeoBuffer);
 
 
-	//double dblPixelOfset = 2;
-	//double dblSTDCoeff = 1.6;
-	//int nWinSize = 5;
-	//int nClasses
-
-	//
-	//Classifier::Init by geometry object
-	//static Classifier::ParseVectorFileForBatchProcessing
-	//static Classifier::PixelsToPolygons
-	//
-
-
-
-	/*
-	Classifier oClassifier;
-	if (!oClassifier.Init(listTileContainers, 
-						oOptionParser.GetOptionValue("-v"),
-						oOptionParser.GetOptionValue("-z") == "" ? 0 : atoi(oOptionParser.GetOptionValue("-z").c_str())))
-	{
-		cout << "ERROR: reading input tile containers" << endl;
-		return 5;
-	}
-	
-
-	
-	
-	GeoRasterBuffer* poClassifiedRaster = 0;
-
-	if (oOptionParser.GetOptionValue("-ranges") == "")
-	{
-		
-	}
-	else
-	{
-		list<string> listRanges = GMXString::SplitCommaSeparatedText(oOptionParser.GetOptionValue("-ranges"));
-		int* panRanges = new int[listRanges.size()];
-		int i = 0;
-		for (string strVal : listRanges)
-		{
-			panRanges[i] = atoi(strVal.c_str());
-			i++;
-		}
-		poClassifiedRaster = oClassifier.ClassifyByPredefinedIntervals(listRanges.size() - 1, panRanges);
-		nClasses = listRanges.size() - 1;
-	}
-	
-
-	
-	if (nMajorityFilterNumRun > 0)
-	{
-		for (int i = 0; i < nMajorityFilterNumRun; i++)
-		{
-			Classifier::ApplyMajorityFilter((unsigned char*)poClassifiedRaster->get_pixel_data_ref(),
-				poClassifiedRaster->get_x_size(),
-				poClassifiedRaster->get_y_size(),
-				nClasses,
-				nWinSize);
-		}
-		//poClassifiedRaster->Burn(oOptionParser.GetOptionValue("-v"), 2);
-		poClassifiedRaster->Clip(oOptionParser.GetOptionValue("-v"));
-	}
-	
-	
-
-
-	
-	//debug
-	poClassifiedRaster->PolygonizeRange(2, 2);
-
-	//end-debug
-
-	if (oOptionParser.GetOptionValue("-o_csv") != "")
-	{
-		string strOutputText;
-		for (string strFile : listTileContainers)
-			strOutputText += strFile + "\n";
-		GMXFileSys::WriteToTextFile(oOptionParser.GetOptionValue("-o_csv"), strOutputText);
-	}
-	
-
-
-	*/
 
 	return 0;
 }

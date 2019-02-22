@@ -22,6 +22,7 @@ namespace agrigate
 		//PolygonizeRanges
 		//VectorOperations::SimplifyPolygons
 		//VectorOperations::CensorSmallPolygons
+
 		
 		static GeoRasterBuffer* InitFromNDVITilesList(list<string> listNDVITiles, 
 			OGRGeometry* poVectorMask, double dblPixelBuffer = 0, int nZoom = 0);
@@ -46,10 +47,7 @@ namespace agrigate
 		bool Clip(OGRGeometry* poClipGeom, double dblPixelBuffer = 0);
 		bool Clip(string strVectorFile, double dblPixelOffset = 0);
 	
-		//assume: data_tape_ == GDT_Byte
-		bool PolygonizePixels(string strOutputVectorFile, bool bSaveTo4326 = false);
 		
-
 		GeoRasterBuffer* BurnVectorMask(OGRGeometry* poClipGeom, double dblPixelOffset = 0);
 		
 		bool SaveGeoRefFile(string strOutput);
@@ -128,6 +126,7 @@ namespace agrigate
 	{
 	public:
 		//ToDo
+    ClassifiedRasterBuffer* Clone();
 		ClassifiedRasterBuffer(int nNumClasses)
 		{ 
 			m_nClasses = nNumClasses; 
@@ -140,6 +139,10 @@ namespace agrigate
 			double dblPixelOutward);
 		bool AdjustExtentToClippedArea();
 		
+    //bool PolygonizePixels(string strOutputVectorFile, 
+    //                      bool bSaveTo4326 = false);
+    bool PolygonizePixels(string strOutputVectorFile, OGRGeometry* poClipMask, bool bSaveTo4326 = false);
+
 	protected:
 		int m_nClasses;
 	};
