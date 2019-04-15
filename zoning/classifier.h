@@ -25,7 +25,7 @@ namespace agrigate
 
 		
 		static GeoRasterBuffer* InitFromNDVITilesList(list<string> listNDVITiles, 
-			OGRGeometry* poVectorMask, double dblPixelBuffer = 0, int nZoom = 0);
+			OGRGeometry* poVectorMask, bool bMosaicMode = false, double dblPixelBuffer = 0, int nZoom = 0);
 		
 		
 		//assumed: data_type_==GDT_Int16
@@ -121,7 +121,7 @@ namespace agrigate
 	};
 
 	
-	//assumed: data_type_==GDT_Byte
+	//assumed: data_type_==GDT_Byte, num_bands_=1
 	class ClassifiedRasterBuffer : public GeoRasterBuffer
 	{
 	public:
@@ -133,7 +133,9 @@ namespace agrigate
 			GeoRasterBuffer();
 		};
 		
-		bool ApplyMajorityFilter(int nWinSize, unsigned char* pabInterpolationMask = 0);
+		bool ApplyMajorityFilter(int nWinSize, 
+                              bool bOnlyNoDataPixels = false, 
+                              unsigned char* pabInterpolationMask = 0);
 		int GetNumClasses() { return m_nClasses; };
 		bool ReplaceByInterpolatedValues(OGRGeometry* poVector, double dblPixelInward,
 			double dblPixelOutward);
@@ -141,7 +143,9 @@ namespace agrigate
 		
     //bool PolygonizePixels(string strOutputVectorFile, 
     //                      bool bSaveTo4326 = false);
-    bool PolygonizePixels(string strOutputVectorFile, OGRGeometry* poClipMask, bool bSaveTo4326 = false);
+    bool PolygonizePixels(string strOutputVectorFile, 
+                          OGRGeometry* poClipMask, 
+                          bool bSaveTo4326 = false);
 
 	protected:
 		int m_nClasses;

@@ -37,16 +37,16 @@ code:
 //if -ranges == "", if o_gjson, than polygoni
 //
 //
-int nDescriptors = 14;
+int nDescriptors = 16;
 const GMXOptionDescriptor asDescriptors[] =
 {
 	//{ "-mean", 0, 0, "input mean csv" },
 	//{ "-max", 0, 0, "input max csv" },
 	{ "-v", 0, 0, "input geojson" },
 	{"-sid",0, 0, "sceneid tiles file list"},
+  {"-mosaic",1,0, "merge input ndvi tiles"},
 	{ "-o_png", 0, 0, "output png" },
 	{ "-o_tif", 0, 0, "output geotiff" },
-	//{ "-o_csv", 0, 0, "output csv file" },
 	{"-m", 0, 0, "classify method: area, intervals (deafault area)"},
 	{"-sig",0,0, "sigma parameter for equal intervals method (default 1.6)"},
 	{"-o_geojson",0,0, "output vector zones"},
@@ -56,7 +56,8 @@ const GMXOptionDescriptor asDescriptors[] =
 	{ "-z", 0, 0, "zoom (default = 13)" },
 	{ "-ranges", 0, 0, "intervals to split" },
 	{ "-col", 0, 1, "color table values" },
-	{"-o_grid",0, 0, "output vector grid"}
+	{"-o_grid",0, 0, "output vector grid"},
+  { "-fids", 0, 0, "feature ids comma separated"}
 };
 
 int nExamples = 2;
@@ -141,7 +142,7 @@ int main(int nArgs, char* argv[])
 		atof(oOptionParser.GetOptionValue("-sig").c_str());
 	int nWinSize = 5;
 	int nClasses = oOptionParser.GetOptionValue("-ncl") == "" ? 5 : atoi(oOptionParser.GetOptionValue("-ncl").c_str());
-	int nMajorityFilterNumRun = oOptionParser.GetOptionValue("-filt") == "" ? 2 :
+	int nMajorityFilterNumRun = oOptionParser.GetOptionValue("-filt") == "" ? 0 :
 								atoi(oOptionParser.GetOptionValue("-filt").c_str());
 	
 	////////////////////////////////////////////////////////////////////////////
@@ -187,12 +188,25 @@ int main(int nArgs, char* argv[])
 	gmx::MercatorTileMatrixSet oMercTMS;
 
 
-  OGRGeometry* poVecBorder = gmx::VectorOperations::ReadAllIntoSingleMultiPolygon(
-		oOptionParser.GetOptionValue("-v"), oMercTMS.GetTilingSRSRef());
+  int nFIDCount = 0;
+  int* panFIDs = 0;
+  if (oOptionParser.GetOptionValue("-fids")!="")
+  {
+    list<string> listFIDs = GMXString::SplitCommaSeparatedText(oOptionParser.GetOptionValue("-fids"));
+    panFIDs = new int[listFIDs.size()];
+    for (auto strFID : listFIDs)
+    {
+      panFIDs[nFIDCount] = atoi(strFID.c_str());
+      nFIDCount++;
+    }
+  }
+
+  OGRGeometry* poVecBorder = gmx::VectorOperations::ReadIntoSingleMultiPolygon(
+		oOptionParser.GetOptionValue("-v"), oMercTMS.GetTilingSRSRef(),panFIDs,nFIDCount);
 
  	
 	GeoRasterBuffer* poGeoBuffer = GeoRasterBuffer::InitFromNDVITilesList(listTileContainers, 
-		poVecBorder,-1,nZoom);
+    poVecBorder, oOptionParser.GetOptionValue("-mosaic") != "", - 0.5, nZoom);
 	
 	if (!poGeoBuffer)
 	{
@@ -200,6 +214,9 @@ int main(int nArgs, char* argv[])
 		return 5;
 	}
 
+  //debug
+  //poGeoBuffer->SaveGeoRefFile("F:\\Work\\Projects\\agri-zoning\\testdata\\task10\\1.tif");
+  //end-debig
 	
 	int* panIntervals = 0;
 	string strClassifyMethod = oOptionParser.GetOptionValue("-m");
@@ -208,19 +225,23 @@ int main(int nArgs, char* argv[])
 		poClassifiedBuffer = poGeoBuffer->ClassifyEqualIntervals(nClasses, panIntervals, dblSTDCoeff);
 	else if (strClassifyMethod == "area" || strClassifyMethod == "")
 		poClassifiedBuffer = poGeoBuffer->ClassifyEqualArea(nClasses, panIntervals);
+  else if (strClassifyMethod == "raw")
+  {
+    panIntervals = new int[101];
+    nClasses = 100;
+    for (int i=0;i<=100;i++)
+      panIntervals[i]=i;
+    poClassifiedBuffer = poGeoBuffer->ClassifyByPredefinedIntervals(nClasses, panIntervals);
+  }
 	else
 	{
 		list<string> listInterval = GMXString::SplitCommaSeparatedText(strClassifyMethod);
-		if (listInterval.size() != 2)
-		{
-			cout << "ERROR: -m parameter is not valid: " << strClassifyMethod << endl;
-			return 2;
-		}
 		
-		panIntervals = new int[4];
+		panIntervals = new int[listInterval.size()+2];
+    nClasses = listInterval.size() + 1;
 		int i = 1;
 		panIntervals[0] = 0;
-		panIntervals[3] = 100;
+		panIntervals[nClasses] = 100*poGeoBuffer->get_num_bands();
 		for (auto str : listInterval)
 		{
 			panIntervals[i] = (int)(100 * atof(str.c_str()) +0.5);
@@ -240,6 +261,9 @@ int main(int nArgs, char* argv[])
 		poClassifiedBuffer = poGeoBuffer->ClassifyByPredefinedIntervals(nClasses, panIntervals);
 	}
 	
+  //debug
+  //poClassifiedBuffer->SaveGeoRefFile("F:\\Work\\Projects\\agri-zoning\\testdata\\task5_2\\classified_raw_2.tif");
+  //end-debig
 
 	if (poClassifiedBuffer == 0)
 	{
@@ -248,10 +272,16 @@ int main(int nArgs, char* argv[])
 	}
 		
 	poClassifiedBuffer->ReplaceByInterpolatedValues(poVecBorder, 1, 1);
-	
+
+  //debug
+  //poClassifiedBuffer->SaveGeoRefFile("F:\\Work\\Projects\\agri-zoning\\testdata\\task_5\\3.tif");
+  //end-debig
+ 	
+
 	for (int i = 0; i < nMajorityFilterNumRun; i++)
 		poClassifiedBuffer->ApplyMajorityFilter(nWinSize);
 
+  
   poClassifiedBuffer->AdjustExtentToClippedArea();
 	
   
@@ -277,59 +307,62 @@ int main(int nArgs, char* argv[])
 	}
 
 
+  if ((oOptionParser.GetOptionValue("-o_png") != "") ||
+    (oOptionParser.GetOptionValue("-o_tif") != ""))
+  {
+    GDALColorTable *poColTab = new GDALColorTable(GPI_RGB);
+
+	  if ((oOptionParser.GetValueList("-col").size() == 0) && (oOptionParser.GetOptionValue("-ranges") == ""))
+	  {
+		  if (nClasses == 3)
+		  {
+			  GDALColorEntry arrColors[6];
+			  arrColors[0].c1 = 0; arrColors[0].c2 = 0; arrColors[0].c3 = 0;
+			  arrColors[1].c1 = 255; arrColors[1].c2 = 0; arrColors[1].c3 = 0;
+			  arrColors[2].c1 = 212; arrColors[2].c2 = 255; arrColors[2].c3 = 190;
+			  arrColors[3].c1 = 47; arrColors[3].c2 = 140; arrColors[3].c3 = 30;
+			  for (int i = 0; i <= nClasses; i++)
+				  poColTab->SetColorEntry(i, &arrColors[i]);
+		  }
+		  else
+		  {
+			  GDALColorEntry arrColors[6];
+			  arrColors[0].c1 = 0; arrColors[0].c2 = 0; arrColors[0].c3 = 0;
+			  arrColors[1].c1 = 255; arrColors[1].c2 = 0; arrColors[1].c3 = 0;
+			  arrColors[2].c1 = 247; arrColors[2].c2 = 209; arrColors[2].c3 = 59;
+			  arrColors[3].c1 = 212; arrColors[3].c2 = 255; arrColors[3].c3 = 190;
+			  arrColors[4].c1 = 76; arrColors[4].c2 = 227; arrColors[4].c3 = 0;
+			  arrColors[5].c1 = 47; arrColors[5].c2 = 140; arrColors[5].c3 = 30;
+			  for (int i = 0; i <= nClasses; i++)
+				  poColTab->SetColorEntry(i, &arrColors[i]);
+		  }
+
+	  }
+	  else
+	  {
+		  GDALColorEntry oColor;
+		  oColor.c1 = 0; oColor.c2 = 0; oColor.c3 = 0;
+		  poColTab->SetColorEntry(0, &oColor);
+
+		  int i = 0;
+		  unsigned char panRGB[3];
+		  for (string strColor : oOptionParser.GetValueList("-col"))
+		  {
+			  GMXString::ConvertStringToRGB(strColor, panRGB);
+			  oColor.c1 = panRGB[0]; oColor.c2 = panRGB[1]; oColor.c3 = panRGB[2];
+			  poColTab->SetColorEntry(i + 1, &oColor);
+			  i++;
+		  }
+	  }
 
 
-	GDALColorTable *poColTab = new GDALColorTable(GPI_RGB);
-
-	if ((oOptionParser.GetValueList("-col").size() == 0) && (oOptionParser.GetOptionValue("-ranges") == ""))
-	{
-		if (nClasses == 3)
-		{
-			GDALColorEntry arrColors[6];
-			arrColors[0].c1 = 0; arrColors[0].c2 = 0; arrColors[0].c3 = 0;
-			arrColors[1].c1 = 255; arrColors[1].c2 = 0; arrColors[1].c3 = 0;
-			arrColors[2].c1 = 212; arrColors[2].c2 = 255; arrColors[2].c3 = 190;
-			arrColors[3].c1 = 47; arrColors[3].c2 = 140; arrColors[3].c3 = 30;
-			for (int i = 0; i <= nClasses; i++)
-				poColTab->SetColorEntry(i, &arrColors[i]);
-		}
-		else
-		{
-			GDALColorEntry arrColors[6];
-			arrColors[0].c1 = 0; arrColors[0].c2 = 0; arrColors[0].c3 = 0;
-			arrColors[1].c1 = 255; arrColors[1].c2 = 0; arrColors[1].c3 = 0;
-			arrColors[2].c1 = 247; arrColors[2].c2 = 209; arrColors[2].c3 = 59;
-			arrColors[3].c1 = 212; arrColors[3].c2 = 255; arrColors[3].c3 = 190;
-			arrColors[4].c1 = 76; arrColors[4].c2 = 227; arrColors[4].c3 = 0;
-			arrColors[5].c1 = 47; arrColors[5].c2 = 140; arrColors[5].c3 = 30;
-			for (int i = 0; i <= nClasses; i++)
-				poColTab->SetColorEntry(i, &arrColors[i]);
-		}
-
-	}
-	else
-	{
-		GDALColorEntry oColor;
-		oColor.c1 = 0; oColor.c2 = 0; oColor.c3 = 0;
-		poColTab->SetColorEntry(0, &oColor);
-
-		int i = 0;
-		unsigned char panRGB[3];
-		for (string strColor : oOptionParser.GetValueList("-col"))
-		{
-			GMXString::ConvertStringToRGB(strColor, panRGB);
-			oColor.c1 = panRGB[0]; oColor.c2 = panRGB[1]; oColor.c3 = panRGB[2];
-			poColTab->SetColorEntry(i + 1, &oColor);
-			i++;
-		}
-	}
+	  poClassifiedBuffer->set_color_table(poColTab);
+	  poClassifiedBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
+		  oOptionParser.GetOptionValue("-o_png") : oOptionParser.GetOptionValue("-o_tif"));
+    delete(poColTab);
+  }
 
 
-	poClassifiedBuffer->set_color_table(poColTab);
-	poClassifiedBuffer->SaveGeoRefFile(oOptionParser.GetOptionValue("-o_png") != "" ?
-		oOptionParser.GetOptionValue("-o_png") : oOptionParser.GetOptionValue("-o_tif"));
-
-  
   if (oOptionParser.GetOptionValue("-o_grid") != "")
   {
     OGRFeature** paoFeatures = 0;
@@ -343,6 +376,14 @@ int main(int nArgs, char* argv[])
 
     for (int i = 0; i < nFeatures; i++)
     {
+      if (panFIDs)
+      {
+        int j = 0;
+        for (j=0;j<nFIDCount;j++)
+          if (panFIDs[j]==i+1) break;
+        if (j==nFIDCount) continue;
+      }
+
       string strGridFile = GMXFileSys::GetAbsolutePath(oOptionParser.GetOptionValue("-o_grid"),
                                                       "grid_field_" + GMXString::ConvertIntToString(i+1) + ".shp");
       poClassifiedBuffer->PolygonizePixels(strGridFile, paoFeatures[i]->GetGeometryRef(), true);
@@ -356,7 +397,6 @@ int main(int nArgs, char* argv[])
         delete(paoCellFeatures[j]);
       }
       delete[]paoCellFeatures;
-     
     }
     string strClassesCountFile = GMXFileSys::GetAbsolutePath(oOptionParser.GetOptionValue("-o_grid"),"classes_count.txt");
     FILE* fp = fopen(strClassesCountFile.c_str(), "w");
@@ -369,9 +409,9 @@ int main(int nArgs, char* argv[])
   }
 
 
+  delete[]panFIDs;
 	delete[]panIntervals;
 	delete(poClassifiedBuffer);
-	delete(poColTab);
 	delete(poGeoBuffer);
 
 

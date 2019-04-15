@@ -7,22 +7,23 @@ namespace agrigate
 
 	GeoRasterBuffer*  GeoRasterBuffer::InitFromNDVITilesList(
 		list<string> listNDVITiles, 
-		OGRGeometry* poVectorMask, 
+		OGRGeometry* poVectorMask,
+    bool bMosaicMode,
 		double dblPixelBuffer,
 		int nZoom )
 	{		
 		if (listNDVITiles.size() == 0) return false;
 		if (!poVectorMask) return false;
 
-		int nNDV = 0;
+    int nNDV = -32767;
 		int* panSign = new int[listNDVITiles.size()];
 		int ind = -1;
 		for (list<string>::iterator iter = listNDVITiles.begin(); iter != listNDVITiles.end(); iter++)
 		{
 			ind++;
-			if ((*iter)[0] == '-')
+      if ((*iter)[0] == '-')
 			{
-				nNDV = -32767;
+				//nNDV = -32767;
 				(*iter) = (*iter).substr(1);
 				panSign[ind] = -1;
 			}
@@ -80,17 +81,23 @@ namespace agrigate
 					unsigned char* pabyTileData = 0;
 					unsigned int nSize = 0;
 
+          
 					bool bTileIsRead = (poContainer->GetProjType() == WEB_MERCATOR) ?
 						poContainer->GetTile(nZoom, x, y, pabyTileData, nSize) :
 						poContainer->GetWebMercTile(nZoom, x, y, pabyTileData, nSize);
 
-					if (!bTileIsRead)
+          if (!bTileIsRead)
 					{
-						printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strIter);
-						poContainer->Close();
-						delete(poOutputBuffer);
-						return false;
+            if (!bMosaicMode)
+            {
+              printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strIter);
+              poContainer->Close();
+              delete(poOutputBuffer);
+              return false;
+            }
+            else continue;
 					}
+    
 
 					RasterBuffer oTileBuffer;
 					oTileBuffer.CreateBufferFromInMemoryData(pabyTileData, nSize, PNG_TILE);
@@ -108,11 +115,19 @@ namespace agrigate
 							n1 = 256 * j + i;
 							if (panNDVIVals[n1] != 0)
 							{
-								n2 = nWidth*(nOffsetTop + j) + nOffsetLeft + i;
-								panIVIVals[n2] = panIVIVals[n2] == nNDV ? 0 : panIVIVals[n2];
-								panIVIVals[n2] += panSign[ind] > 0 ? (panNDVIVals[n1] - 101) : 
-																	-(panNDVIVals[n1] - 101);
-							}
+                n2 = nWidth*(nOffsetTop + j) + nOffsetLeft + i;
+ 
+                if (!bMosaicMode)
+                {
+                  panIVIVals[n2] = panIVIVals[n2] == nNDV ? 0 : panIVIVals[n2];
+                  panIVIVals[n2] += panSign[ind] > 0 ? (panNDVIVals[n1] - 101) :
+                    -(panNDVIVals[n1] - 101);
+                }
+                else
+                {
+                  panIVIVals[n2] = panIVIVals[n2] < (panNDVIVals[n1]-101) ? panNDVIVals[n1]-101 : panIVIVals[n2];
+                }
+              }
 						}
 					}
 				
@@ -243,7 +258,7 @@ namespace agrigate
 	bool GeoRasterBuffer::Clip(string strVectorFile, double dblPixelOffset)
 	{
 		OGRGeometry* poClipGeometry =
-      VectorOperations::ReadAllIntoSingleMultiPolygon(strVectorFile, GetSRSRef());
+      VectorOperations::ReadIntoSingleMultiPolygon(strVectorFile, GetSRSRef());
 		if (!poClipGeometry) return false;
 
 		bool bResult = Clip(poClipGeometry,dblPixelOffset);
@@ -330,9 +345,14 @@ namespace agrigate
 
 		for (int i = 0; i < nArea; i++)
 		{
-			for (c = 0; c <= nNumClass; c++)
-				if (panIntervals[c]>panValues[i]) break;
-			panClasses[i] = c <= nNumClass ? c : 0;
+      if (panValues[i]==m_nNDV) panClasses[i] = 0;
+      else
+      {
+        for (c = 1; c <= nNumClass; c++)
+          if (panIntervals[c]>panValues[i]) break;
+        panClasses[i] = c <= nNumClass ? c : 0;
+      }
+			
 		}
 
 		ClassifiedRasterBuffer* poClassifiedBuffer = new ClassifiedRasterBuffer(nNumClass);
@@ -806,8 +826,12 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
   poClippedBuffer->CloneGeoRef(this);
 
   poClippedBuffer->Clip(poClipMask);
+  poClippedBuffer->ReplaceByInterpolatedValues(poClipMask, 1, 1);
   poClippedBuffer->AdjustExtentToClippedArea();
-
+  
+  //debug
+  //poClippedBuffer->SaveGeoRefFile(strOutputVectorFile+"_2.tif");
+  //end-debug
 
   GDALDriver *poDriver = GMXFileSys::GetExtension(strOutputVectorFile) == "shp" ?
     GetGDALDriverManager()->GetDriverByName("ESRI Shapefile") :
@@ -828,18 +852,16 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
   OGRFieldDefn oFieldFRAC("FRACTION", OFTReal);
   poLayer->CreateField(&oFieldFRAC);
 
+    
+  unsigned char* p_class_values = (unsigned char*)p_pixel_data_;
 
-  int t = 0;
   int val = 0;
   int n = x_size_*y_size_;
   for (int i = 0; i < x_size_; i++)
   {
     for (int j = 0; j < y_size_; j++)
     {
-      t = x_size_*j + i;
-      val = 0;
-      for (int b = 0; b < num_bands_; b++)
-        val += ((unsigned char*)p_pixel_data_)[b*n + t];
+      val = p_class_values[x_size_*j + i];
       if (val == 0) continue;
       OGRLinearRing oPixelRing;
       oPixelRing.addPoint(m_oEnvp.MinX + i*m_dblRes, m_oEnvp.MaxY - j*m_dblRes);
@@ -858,8 +880,8 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
       else
       {
         OGRFeature *poFeature = OGRFeature::CreateFeature(poLayer->GetLayerDefn());
-        poFeature->SetField("DN", val / num_bands_);
-
+        poFeature->SetField("DN", val);
+       
         if (poClipMask->Contains(poPixelPoly))
           poFeature->SetField("FRACTION", 1.0);
         else
@@ -885,7 +907,7 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
             delete(poPixelCut);
             poFeature->SetField("FRACTION", dblCutArea / poPixelPoly->get_Area());
          }
-       }
+        }
 
         if (bSaveTo4326)
         {
@@ -902,7 +924,6 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
   }
 
   GDALClose(poDS);
-
   delete(poClippedBuffer);
   return true;
 }
@@ -930,9 +951,12 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
 			panOutwardBufferPixels[i] = panOutwardBufferPixels[i] ^ panInwardBufferPixels[i];
 		}
 	
-						
-		ApplyMajorityFilter(int(2 * (dblPixelOutward + dblPixelInward) + 3.5),
-			panOutwardBufferPixels);
+    //debug
+    //poMaskOutwardOffset->SaveGeoRefFile("F:\\Work\\Projects\\agri-zoning\\testdata\\task5_2\\border.tif");
+		//end-debug
+
+    ApplyMajorityFilter(int(2 * (dblPixelOutward + dblPixelInward) + 3.5),true,
+			                  panOutwardBufferPixels);
 
 		delete(poMaskInwardOffset);
 		delete(poMaskOutwardOffset);
@@ -942,7 +966,9 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
 	}
 
 	
-	bool ClassifiedRasterBuffer::ApplyMajorityFilter(int nWinSize, unsigned char* pabInterpolationMask )
+	bool ClassifiedRasterBuffer::ApplyMajorityFilter(int nWinSize, 
+                                                    bool bOnlyNoDataPixels,
+                                                    unsigned char* pabInterpolationMask )
 	{
 		int *panFreq = new int[m_nClasses + 1];
 		int nWinSize_2 = nWinSize / 2;
@@ -959,6 +985,8 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
 		{
 			for (int x = 0; x < x_size_; x++)
 			{
+        if ( bOnlyNoDataPixels && (pabClasses[y*x_size_ + x] != 0)) continue;
+          
 				if (!pabInterpolationMask)
 				{
 					if (pabClasses[y*x_size_ + x] == 0) continue;
@@ -990,7 +1018,9 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
 				nMaxFreqClass = pabClasses[x_size_*y + x];
 				panFreq[0] = 0;
 				for (int q = 1; q <= m_nClasses; q++)
-					nMaxFreqClass = panFreq[q] > panFreq[nMaxFreqClass] ? q : nMaxFreqClass;
+				{
+        	nMaxFreqClass = panFreq[q] > panFreq[nMaxFreqClass] ? q : nMaxFreqClass;
+        }
 				pabClassesFiltered[x_size_*y + x] = nMaxFreqClass;
 			}
 		}

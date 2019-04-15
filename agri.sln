@@ -5,6 +5,8 @@ VisualStudioVersion = 12.0.21005.1
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zoning", "zoning\zoning.vcxproj", "{82DEE80D-DA2B-4F2D-9AEB-2A2A5BD826E9}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "fertilizer", "fertilizer\fertilizer.vcxproj", "{7577147C-68D3-40FE-A57C-2D6066DF3BAA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Mixed Platforms = Debug|Mixed Platforms
@@ -27,6 +29,17 @@ Global
 		{82DEE80D-DA2B-4F2D-9AEB-2A2A5BD826E9}.Release|Win32.Build.0 = Release|Win32
 		{82DEE80D-DA2B-4F2D-9AEB-2A2A5BD826E9}.Release|x64.ActiveCfg = Release|x64
 		{82DEE80D-DA2B-4F2D-9AEB-2A2A5BD826E9}.Release|x64.Build.0 = Release|x64
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|Mixed Platforms.ActiveCfg = Debug|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|Mixed Platforms.Build.0 = Debug|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|Win32.ActiveCfg = Debug|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|Win32.Build.0 = Debug|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|x64.ActiveCfg = Debug|x64
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Debug|x64.Build.0 = Debug|x64
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Release|Mixed Platforms.ActiveCfg = Release|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Release|Mixed Platforms.Build.0 = Release|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Release|Win32.ActiveCfg = Release|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Release|Win32.Build.0 = Release|Win32
+		{7577147C-68D3-40FE-A57C-2D6066DF3BAA}.Release|x64.ActiveCfg = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
