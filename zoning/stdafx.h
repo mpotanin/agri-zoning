@@ -19,7 +19,7 @@ using namespace std;
 #include "gd.h"
 #include "sqlite3.h"
 #include "cpl_string.h"
-#include "commonutils.h"
+//#include "commonutils.h"
 #include "gdal_utils_priv.h"
 
 
