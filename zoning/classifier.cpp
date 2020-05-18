@@ -186,8 +186,8 @@ namespace agrigate
 										double dblPixelBuffer,
 										int nZoom )
 	{		
-		if (listNDVITiles.size() == 0) return false;
-		if (!poVectorMask) return false;
+		if (listNDVITiles.size() == 0) return 0;
+		if (!poVectorMask) return 0;
 
 		int nNODV = -32767;
 		int* panSign = new int[listNDVITiles.size()];
@@ -251,7 +251,7 @@ namespace agrigate
 			{
 				delete(poOutputBuffer);
 				cout << "ERROR: reading file " << strIter << endl;
-				return false;
+				return 0;
 			}
 
 			for (int x = minx; x <= maxx; x++)
@@ -268,7 +268,7 @@ namespace agrigate
 						  printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strIter);
 						  poContainer->Close();
 						  delete(poOutputBuffer);
-						  return false;
+						  return 0;
 						}
 						else continue;
 					}
