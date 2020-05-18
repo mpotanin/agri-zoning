@@ -16,11 +16,11 @@ using namespace std;
 #include "ogrsf_frmts.h"
 #include "vrtdataset.h"
 #include "gdalwarper.h"
-#include "gd.h"
+//#include "gd.h"
 #include "sqlite3.h"
-#include "cpl_string.h"
+//#include "cpl_string.h"
 //#include "commonutils.h"
-#include "gdal_utils_priv.h"
+//#include "gdal_utils_priv.h"
 
 
 #include "filesystemfuncs.h"
