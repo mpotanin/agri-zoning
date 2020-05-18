@@ -4,26 +4,200 @@
 
 namespace agrigate
 {
+	GeoRasterBuffer* GeoRasterBuffer::InitFromNDVIFiles(list<string> listNDVIFiles,
+														string strVectorFile,
+														bool bSaveIVI,
+														double dblPixelBuffer)
+	{
+		if (listNDVIFiles.size() == 0) return 0;
 
-	GeoRasterBuffer*  GeoRasterBuffer::InitFromNDVITilesList(
-		list<string> listNDVITiles, 
-		OGRGeometry* poVectorMask,
-    bool bMosaicMode,
-		double dblPixelBuffer,
-		int nZoom )
+		string strFirstFile = (*listNDVIFiles.begin());
+		gmx::RasterFile oRF;
+		if (!oRF.Init(strFirstFile))
+		{
+			cout << "ERROR: reading file: " << strFirstFile << endl;
+			return 0;
+		}
+
+		OGRSpatialReference oBufferSRS;
+		if (!oRF.GetSRS(oBufferSRS))
+		{
+			cout << "ERROR: reading spatial reference from file: " << strFirstFile << endl;
+			return 0;
+
+		}
+
+		double padblGeoTransform[6];
+		oRF.GetGeoTransform(padblGeoTransform);
+		
+		double dblPixelRes = padblGeoTransform[1];
+		
+		int nWidth, nHeight;
+		oRF.GetPixelSize(nWidth, nHeight);
+
+		OGREnvelope oEnvp;
+		oEnvp.MinX = padblGeoTransform[0];
+		oEnvp.MaxY = padblGeoTransform[3];
+		oEnvp.MaxX = oEnvp.MinX + dblPixelRes * nWidth;
+		oEnvp.MinY = oEnvp.MaxY - dblPixelRes * nHeight;
+
+		int nOffsetX = 0;
+		int nOffsetY = 0;
+
+		OGRGeometry* poMultiPoly = 0;
+
+		if (strVectorFile != "")
+		{
+			poMultiPoly = gmx::VectorOperations::ReadIntoSingleMultiPolygon(strVectorFile, &oBufferSRS);
+			if (!poMultiPoly)
+			{
+				cout << "ERROR: reading geometry from file: " << strVectorFile << endl;
+				return 0;
+			}
+
+			poMultiPoly->getEnvelope(&oEnvp);//TODO: pixelbuffer
+			nWidth = ceil(((oEnvp.MaxX - oEnvp.MinX) / dblPixelRes) + 2);
+			nHeight = ceil(((oEnvp.MaxY - oEnvp.MinY) / dblPixelRes) + 2);
+
+
+			oEnvp.MinX = max(padblGeoTransform[0],
+				padblGeoTransform[0] + dblPixelRes * (floor((oEnvp.MinX - padblGeoTransform[0]) / dblPixelRes) - 1));
+			oEnvp.MaxY = min(padblGeoTransform[3],
+				padblGeoTransform[3] - dblPixelRes * (floor((padblGeoTransform[3] - oEnvp.MaxY) / dblPixelRes) - 1));
+
+			oEnvp.MaxX = oEnvp.MinX + nWidth * dblPixelRes;
+			oEnvp.MinY = oEnvp.MaxY - nHeight * dblPixelRes;
+
+
+		}
+		
+		GeoRasterBuffer *poOutputBuffer = new GeoRasterBuffer();
+		bSaveIVI = false; //TODO: if bSaveIVI == true
+
+		poOutputBuffer->CreateBuffer(listNDVIFiles.size(), nWidth, nHeight, 0, GDT_Int16);
+		poOutputBuffer->SetGeoRef(&oBufferSRS, oEnvp, dblPixelRes);
+		GDALDataset* poVrtDS = poOutputBuffer->CreateInMemGDALDataset(false);
+		
+		int nCount = 1;
+
+		for (auto strFile : listNDVIFiles)
+		{
+			//warp from strFile into listNDVIFiles
+			GDALDataset* poInputFileDS = (GDALDataset*)GDALOpen(strFile.c_str(), GA_ReadOnly);
+			GDALWarpOptions *poWarpOptions = GDALCreateWarpOptions();
+			poWarpOptions->papszWarpOptions = 0;
+
+			poWarpOptions->hSrcDS = poInputFileDS;
+			poWarpOptions->hDstDS = poVrtDS;
+
+			poWarpOptions->dfWarpMemoryLimit = 250000000;
+
+			double dblErr = 0.125;
+
+			poWarpOptions->nBandCount = 1;
+			poWarpOptions->panSrcBands = new int[1];
+			poWarpOptions->panDstBands = new int[1];
+			poWarpOptions->panSrcBands[0] = 1;
+			poWarpOptions->panDstBands[0] = nCount;
+
+			poWarpOptions->padfSrcNoDataReal = new double[1];
+			poWarpOptions->padfSrcNoDataImag = new double[1];
+			poWarpOptions->padfSrcNoDataReal[0] = poOutputBuffer->m_nNODV;
+			poWarpOptions->padfSrcNoDataImag[0] = 0;
+			
+			poWarpOptions->pfnProgress = GMXPrintProgressStub;
+		
+			char* pachBufferWKT;
+			oBufferSRS.exportToWkt(&pachBufferWKT);
+
+			//char* pachFileWKT;
+			//poFileDS->GetProjectionRef()
+
+			poWarpOptions->pTransformerArg = GDALCreateApproxTransformer(GDALGenImgProjTransform,
+										GDALCreateGenImgProjTransformer(poInputFileDS, 0, poVrtDS, pachBufferWKT, false, 0.0, 1),
+										dblErr);
+			poWarpOptions->pfnTransformer = GDALApproxTransform;
+			poWarpOptions->eResampleAlg = GRA_Cubic;
+
+
+			/*
+			poWarpOptions->padfSrcNoDataReal = new double[num_bands_];
+			poWarpOptions->padfSrcNoDataImag = new double[num_bands_];
+			for (int i = 0; i < num_bands_; i++)
+			{
+				poWarpOptions->padfSrcNoDataReal[i] = m_nNODV;
+				poWarpOptions->padfSrcNoDataImag[i] = 0;
+			}
+			*/
+
+			// Initialize and execute the warp operation. 
+			GDALWarpOperation gdal_warp_operation;
+			gdal_warp_operation.Initialize(poWarpOptions);
+
+			bool  warp_error = (CE_None != gdal_warp_operation.ChunkAndWarpImage(0, 0, nWidth, nHeight));
+
+			delete[]poWarpOptions->panSrcBands;
+			delete[]poWarpOptions->panDstBands;
+			poWarpOptions->panSrcBands = 0;
+			poWarpOptions->panDstBands = 0;
+			delete[]poWarpOptions->padfSrcNoDataReal;
+			delete[]poWarpOptions->padfSrcNoDataImag;
+			poWarpOptions->padfSrcNoDataReal = 0;
+			poWarpOptions->padfSrcNoDataImag = 0;
+
+			GDALDestroyApproxTransformer(poWarpOptions->pTransformerArg);
+			GDALDestroyWarpOptions(poWarpOptions);
+			OGRFree(pachBufferWKT);
+			GDALClose(poInputFileDS);
+			
+			nCount++;
+		}
+
+
+		poVrtDS->RasterIO(GF_Read, 0, 0, nWidth, nHeight, poOutputBuffer->get_pixel_data_ref(),
+			nWidth, nHeight, poOutputBuffer->get_data_type(), poOutputBuffer->get_num_bands(), 0, 0, 0, 0);
+		
+		if (poMultiPoly)
+		{
+			poOutputBuffer->Clip(poMultiPoly, dblPixelBuffer);
+			delete(poMultiPoly);
+		}
+
+		return poOutputBuffer;
+		
+	}
+
+	bool GeoRasterBuffer::SetGeoRef(OGRSpatialReference* poSRS, OGREnvelope oEnvp, double dblRes)
+	{
+		if (!poSRS) return false;
+		
+		m_poSRS = poSRS->Clone();
+		m_dblRes = dblRes;
+		m_oEnvp = oEnvp;
+
+		return true;
+	}
+
+	GeoRasterBuffer*  GeoRasterBuffer::InitFromNDVITiles(
+										list<string> listNDVITiles, 
+										OGRGeometry* poVectorMask,
+										bool bSaveIVI,
+										bool bMosaicMode,
+										double dblPixelBuffer,
+										int nZoom )
 	{		
 		if (listNDVITiles.size() == 0) return false;
 		if (!poVectorMask) return false;
 
-    int nNDV = -32767;
+		int nNODV = -32767;
 		int* panSign = new int[listNDVITiles.size()];
 		int ind = -1;
 		for (list<string>::iterator iter = listNDVITiles.begin(); iter != listNDVITiles.end(); iter++)
 		{
 			ind++;
-      if ((*iter)[0] == '-')
+			if ((*iter)[0] == '-')
 			{
-				//nNDV = -32767;
+				//nNODV = -32767;
 				(*iter) = (*iter).substr(1);
 				panSign[ind] = -1;
 			}
@@ -57,10 +231,16 @@ namespace agrigate
 		int nWidth = 256 * (maxx - minx + 1);
 		int nHeight = 256 * (maxy - miny + 1);
 		GeoRasterBuffer *poOutputBuffer =  new GeoRasterBuffer();
-		poOutputBuffer->CreateBuffer(1, nWidth, nHeight, 0, GDT_Int16);
-		poOutputBuffer->InitByValue(poOutputBuffer->m_nNDV = nNDV);
 		
-		int16_t* panIVIVals = (int16_t*)poOutputBuffer->get_pixel_data_ref();
+		bSaveIVI = bMosaicMode ? true : bSaveIVI;
+
+		if (bSaveIVI) poOutputBuffer->CreateBuffer(1, nWidth, nHeight, 0, GDT_Int16);
+		else poOutputBuffer->CreateBuffer(listNDVITiles.size(), nWidth, nHeight, 0, GDT_Int16);
+		int nBands = poOutputBuffer->get_num_bands();
+
+		poOutputBuffer->InitByValue(poOutputBuffer->m_nNODV = nNODV);
+		
+		int16_t* panOutputVals = (int16_t*)poOutputBuffer->get_pixel_data_ref();
 
 		ind = -1;
 		for (string strIter : listNDVITiles)
@@ -81,24 +261,18 @@ namespace agrigate
 					unsigned char* pabyTileData = 0;
 					unsigned int nSize = 0;
 
-          
-					bool bTileIsRead = (poContainer->GetProjType() == WEB_MERCATOR) ?
-						poContainer->GetTile(nZoom, x, y, pabyTileData, nSize) :
-						poContainer->GetWebMercTile(nZoom, x, y, pabyTileData, nSize);
-
-          if (!bTileIsRead)
+					if (!poContainer->GetTile(nZoom, x, y, pabyTileData, nSize))
 					{
-            if (!bMosaicMode)
-            {
-              printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strIter);
-              poContainer->Close();
-              delete(poOutputBuffer);
-              return false;
-            }
-            else continue;
+						if (!bMosaicMode)
+						{
+						  printf("ERROR: reading tile (%d, %d, %d) from file %s\n", nZoom, x, y, strIter);
+						  poContainer->Close();
+						  delete(poOutputBuffer);
+						  return false;
+						}
+						else continue;
 					}
     
-
 					RasterBuffer oTileBuffer;
 					oTileBuffer.CreateBufferFromInMemoryData(pabyTileData, nSize, PNG_TILE);
 					delete[]pabyTileData;
@@ -115,19 +289,20 @@ namespace agrigate
 							n1 = 256 * j + i;
 							if (panNDVIVals[n1] != 0)
 							{
-                n2 = nWidth*(nOffsetTop + j) + nOffsetLeft + i;
- 
-                if (!bMosaicMode)
-                {
-                  panIVIVals[n2] = panIVIVals[n2] == nNDV ? 0 : panIVIVals[n2];
-                  panIVIVals[n2] += panSign[ind] > 0 ? (panNDVIVals[n1] - 101) :
-                    -(panNDVIVals[n1] - 101);
-                }
-                else
-                {
-                  panIVIVals[n2] = panIVIVals[n2] < (panNDVIVals[n1]-101) ? panNDVIVals[n1]-101 : panIVIVals[n2];
-                }
-              }
+								n2 = bSaveIVI ? nWidth*(nOffsetTop + j) + nOffsetLeft + i :
+												ind*nWidth*nHeight + nWidth * (nOffsetTop + j) + nOffsetLeft + i;
+ 								if (!bMosaicMode)
+								{
+									panOutputVals[n2] = panOutputVals[n2] == nNODV ? 0 : panOutputVals[n2];
+									panOutputVals[n2] += panSign[ind] > 0 ? (panNDVIVals[n1] - 101) :
+															-(panNDVIVals[n1] - 101);
+								}
+								else
+								{
+									panOutputVals[n2] = panOutputVals[n2] < (panNDVIVals[n1]-101) ? 
+										panNDVIVals[n1]-101 : panOutputVals[n2];
+								}
+							}
 						}
 					}
 				
@@ -175,7 +350,7 @@ namespace agrigate
 		for (int i = 0; i < n; i++)
 		{
 			if ((panPixels[i] < nOffset) || (panPixels[i]>nUpperBound))
-				panMaskPixels[i] = m_nNDV;
+				panMaskPixels[i] = m_nNODV;
 			else
 				panMaskPixels[i] = 1 + ((panPixels[i]-nOffset)/nStep);
 		}
@@ -227,7 +402,7 @@ namespace agrigate
 			);
 
 		for (int b = 1; b <= num_bands_; b++)
-			poVrtDS->GetRasterBand(b)->SetNoDataValue(m_nNDV);
+			poVrtDS->GetRasterBand(b)->SetNoDataValue(m_nNODV);
 
 
 		if (bCopyData) 
@@ -316,9 +491,9 @@ namespace agrigate
 		void* panPixelBlock = 
 			GetPixelDataBlock(nLeft, nTop, x_size_ - nLeft - nRight, y_size_ - nTop - nBottom);
 
-    ClearBuffer();
+		ClearBuffer();
 
-    p_pixel_data_ = panPixelBlock;
+		p_pixel_data_ = panPixelBlock;
 
 		x_size_ -= (nLeft + nRight);
 		y_size_ -= (nTop + nBottom);
@@ -345,7 +520,7 @@ namespace agrigate
 
 		for (int i = 0; i < nArea; i++)
 		{
-      if (panValues[i]==m_nNDV) panClasses[i] = 0;
+      if (panValues[i]==m_nNODV) panClasses[i] = 0;
       else
       {
         for (c = 1; c <= nNumClass; c++)
@@ -363,6 +538,165 @@ namespace agrigate
 		return poClassifiedBuffer;
 	}
 
+	
+	double* GeoRasterBuffer::CalcPixelRanks(int nBand)
+	{
+		int16_t* panPixels = (int16_t*)p_pixel_data_;
+		int nArea = x_size_ * y_size_;
+		int nNumValidPixels = 0;
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panPixels[i] != m_nNODV) nNumValidPixels++;
+		}
+		if (nNumValidPixels == 0) return 0;
+
+		double* padblPixelRanks = new double[nArea];
+		for (int i = 0; i < nArea; i++)
+			padblPixelRanks[i] = 0.;
+
+		for (int b = 0; b < num_bands_; b++)
+		{
+			int nMax = -0xfffffff, nMin = 0xfffffff;
+			int nBandOffset = b * nArea;
+			for (int i = nBandOffset; i < nBandOffset + nArea; i++)
+			{
+				if (panPixels[i] != m_nNODV)
+				{
+					nMax = nMax < panPixels[i] ? panPixels[i] : nMax;
+					nMin = nMin > panPixels[i] ? panPixels[i] : nMin;
+				}
+			}
+
+			int nHistSize = nMax - nMin + 1;
+			int* panHist = new int[nHistSize];
+			for (int i = 0; i < nHistSize; i++)
+				panHist[i] = 0;
+
+			for (int i = nBandOffset; i < nBandOffset + nArea; i++)
+			{
+				if (panPixels[i] != m_nNODV) panHist[panPixels[i] - nMin]++;
+			}
+
+			for (int i = 1; i < nHistSize; i++)
+				panHist[i] += panHist[i - 1];
+
+			for (int i = 0; i < nArea; i++)
+			{
+				if (panPixels[nBandOffset + i] != m_nNODV)
+				{
+					padblPixelRanks[i] += ( ((double)panHist[panPixels[nBandOffset + i]-nMin]) 
+											/ nNumValidPixels);
+				}
+			}
+			delete[]panHist;
+		}
+
+				
+		if (num_bands_ > 1)
+		{
+			for (int i = 0; i < nArea; i++)
+			{
+				padblPixelRanks[i] /= num_bands_;
+			}
+		}
+		
+		return padblPixelRanks;
+	}
+
+	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyByPredefinedQuantiles(int nNumClass, 
+																			double* padblQuantiles)
+	{
+		double* padblPixelRanks = CalcPixelRanks();
+		if (!padblPixelRanks) return 0;
+
+		int nArea = x_size_ * y_size_;
+		unsigned char* panClasses = new unsigned char[nArea];
+
+		for (int i = 0; i < nArea; i++)
+		{
+			for (int n = 0; n <= nNumClass; n++)
+			{
+				if (padblPixelRanks[i] < padblQuantiles[n] + 1e-20)
+				{
+					panClasses[i] = n;
+					break;
+				}
+			}
+		}
+
+		ClassifiedRasterBuffer* poClassifiedBuffer = new ClassifiedRasterBuffer(nNumClass);
+		poClassifiedBuffer->CreateBuffer(1, x_size_, y_size_, panClasses);
+		poClassifiedBuffer->CloneGeoRef(this);
+
+		delete[]panClasses;
+		delete[]padblPixelRanks;
+		return poClassifiedBuffer;
+		/*
+		int16_t* panPixels = (int16_t*)p_pixel_data_;
+		int nArea = x_size_ * y_size_;
+		int nNumPixels = 0;
+		int nMax = -0xfffffff, nMin = 0xfffffff;
+		for (int i = 0; i < nArea; i++)
+		{
+			if (panPixels[i] != m_nNODV)
+			{
+				nNumPixels++;
+				nMax = nMax < panPixels[i] ? panPixels[i] : nMax;
+				nMin = nMin > panPixels[i] ? panPixels[i] : nMin;
+			}
+		}
+
+		if (nNumPixels == 0)
+		{
+			panIntervals = 0;
+			return 0;
+		}
+
+		unsigned char* panClasses = new unsigned char[nArea];
+
+		for (int b = 0; b < this->num_bands_; b++)
+		{
+			int nHistSize = nMax - nMin + 1;
+			int* panHist = new int[nHistSize];
+			for (int i = 0; i < nHistSize; i++)
+				panHist[i] = 0;
+
+			for (int i = 0; i < nArea; i++)
+			{
+				if (panPixels[i] != m_nNODV) panHist[panPixels[i] - nMin]++;
+			}
+
+			panIntervals = new int[nNumClass + 1];
+			panIntervals[0] = nMin;
+			panIntervals[nNumClass] = nMax + 1;
+
+			int nClassSum = 0;
+			int n = 1;
+
+			for (int i = 0; i < nHistSize; i++)
+			{
+				if ((((double)(nClassSum + panHist[i])) / ((double)nNumPixels)) + padblQuantiles[n - 1] > padblQuantiles[n])
+				{
+					panIntervals[n] = i + nMin;
+					nClassSum = 0;
+					if (n == nNumClass - 1) break;
+					else n++;
+				}
+				nClassSum += panHist[i];
+			}
+
+
+			if (n < nNumClass - 1)
+			{
+				for (int i = n; i++; i < nNumClass)
+					panIntervals[i] = nMax;
+			}
+		}
+		delete[]panHist;
+		return ClassifyByPredefinedIntervals(nNumClass, panIntervals);
+		*/
+	}
+
 	//ToDo
 	ClassifiedRasterBuffer* GeoRasterBuffer::ClassifyEqualArea(int nNumClass, int* &panIntervals)
 	{
@@ -372,7 +706,7 @@ namespace agrigate
 		int nMax = -0xfffffff, nMin = 0xfffffff;
 		for (int i = 0; i < nArea; i++)
 		{
-			if (panPixels[i]!=m_nNDV)
+			if (panPixels[i]!=m_nNODV)
 			{
 				nNumPixels++;
 				nMax = nMax < panPixels[i] ? panPixels[i] : nMax;
@@ -393,7 +727,7 @@ namespace agrigate
 
 		for (int i = 0; i < nArea; i++)
 		{
-			if (panPixels[i]!=m_nNDV) panHist[panPixels[i] - nMin]++;
+			if (panPixels[i]!=m_nNODV) panHist[panPixels[i] - nMin]++;
 		}
 
 		panIntervals = new int[nNumClass + 1];
@@ -404,6 +738,7 @@ namespace agrigate
 		int nClassPixelCount = nNumPixels / nNumClass;
 		int n = 1;
 
+		
 		for (int i = 0; i < nHistSize; i++)
 		{
 			if ((nFreqSum / nClassPixelCount) < ((nFreqSum + panHist[i]) / nClassPixelCount))
@@ -414,7 +749,7 @@ namespace agrigate
 			}
 			nFreqSum += panHist[i];
 		}
-
+		
 		if (n < nNumClass-1)
 		{
 			for (int i = n; i++; i < nNumClass)
@@ -439,7 +774,7 @@ namespace agrigate
 		int nArea = x_size_*y_size_;
 		for (int i = 0; i < nArea; i++)
 		{
-			if (panPixels[i]!=m_nNDV)
+			if (panPixels[i]!=m_nNODV)
 			{
 				nNumPixels++;
 				if (dblSTDCoeff > 0)
@@ -543,7 +878,7 @@ namespace agrigate
 		poWarpOptions->padfSrcNoDataImag = new double[num_bands_];
 		for (int i = 0; i < num_bands_; i++)
 		{
-			poWarpOptions->padfSrcNoDataReal[i] = m_nNDV;
+			poWarpOptions->padfSrcNoDataReal[i] = m_nNODV;
 			poWarpOptions->padfSrcNoDataImag[i] = 0;
 		}
 
@@ -580,10 +915,36 @@ namespace agrigate
 	}
 
 	
-	bool GeoRasterBuffer::SaveGeoRefFile(string strOutput)
+	bool GeoRasterBuffer::SaveGeoRefFile(string strRasterFile)
 	{
-		SaveBufferToFile(strOutput);
-		GMXFileSys::WriteWLDFile(strOutput, m_oEnvp.MinX, m_oEnvp.MaxY, m_dblRes);
+		SaveBufferToFile(strRasterFile);
+		if ((strRasterFile.find(".tif") != string::npos) ||
+			(strRasterFile.find(".TIF") != string::npos))
+		{
+			GDALDataset* poDS = (GDALDataset*)GDALOpen(strRasterFile.c_str(), GA_Update);
+			
+			char* pachWKT;
+			GetSRSRef()->exportToWkt(&pachWKT);
+			poDS->SetProjection(pachWKT);
+			
+			double dblGeotransform[6];
+			dblGeotransform[0] = m_oEnvp.MinX;
+			dblGeotransform[1] = m_dblRes;
+			dblGeotransform[2] = 0;
+			dblGeotransform[3] = m_oEnvp.MaxY;
+			dblGeotransform[4] = 0;
+			dblGeotransform[5] = -m_dblRes;
+			poDS->SetGeoTransform(dblGeotransform);
+			
+			OGRFree(pachWKT);
+			GDALClose(poDS);
+			//char *p_dst_wkt = 0;
+			//p_tile_mset_->GetTilingSRSRef()->exportToWkt(&p_dst_wkt);
+			//p_vrt_ds->SetProjection(p_dst_wkt);
+			//OGRFree(p_src_wkt);
+
+		}
+		else GMXFileSys::WriteWLDFile(strRasterFile, m_oEnvp.MinX, m_oEnvp.MaxY, m_dblRes);
 		
 		return true;
 	}
@@ -1075,7 +1436,7 @@ bool ClassifiedRasterBuffer::PolygonizePixels(string strOutputVectorFile,
 			else
 			{
 				m_mapBuffers[strName] =
-					GeoRasterBuffer::InitFromNDVITilesList(listNDVI,mapClipGeom[strName],nZoom);
+					GeoRasterBuffer::InitFromNDVITiles(listNDVI,mapClipGeom[strName],nZoom);
 				if (!m_mapBuffers[strName])
 				{
 					cout << "ERROR: can't init properly object: " << strName << endl;

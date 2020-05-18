@@ -23,38 +23,52 @@ namespace agrigate
 		//VectorOperations::SimplifyPolygons
 		//VectorOperations::CensorSmallPolygons
 
+		static GeoRasterBuffer* InitFromNDVIFiles(list<string> listNDVIFiles,
+													string strVectorFile = "",
+													bool bSaveIVI = true,
+													double dblPixelBuffer = 0);
 		
-		static GeoRasterBuffer* InitFromNDVITilesList(list<string> listNDVITiles, 
-			OGRGeometry* poVectorMask, bool bMosaicMode = false, double dblPixelBuffer = 0, int nZoom = 0);
+		static GeoRasterBuffer* InitFromNDVITiles(list<string> listNDVITiles, 
+													OGRGeometry* poVectorMask, 
+													bool bSaveIVI=true, 
+													bool bMosaicMode = false, 
+													double dblPixelBuffer = 0, 
+													int nZoom = 0);
 		
-		
-		//assumed: data_type_==GDT_Int16
+		//assumed: data_type_==GDT_Int16, single band
 		ClassifiedRasterBuffer* ClassifyByPredefinedIntervals(int nNumClass, int* panIntervals);
 		
 		//assumed: data_type_==GDT_Int16
+		ClassifiedRasterBuffer* ClassifyByPredefinedQuantiles(int nNumClass, double* padblQuantiles);
+
+		//assumed: data_type_==GDT_Int16, single band
 		ClassifiedRasterBuffer* ClassifyEqualArea(int nNumClass, int* &panIntervals);
 
-		//assumed: data_type_==GDT_Int16
+		//assumed: data_type_==GDT_Int16, single band
 		ClassifiedRasterBuffer* ClassifyEqualIntervals(int nNumClass, int* &panIntervals, double dblSTDCoeff = 0);
 	
 		
-		GeoRasterBuffer(){ m_poSRS = 0; m_nNDV = 0; }
+		GeoRasterBuffer(){ m_poSRS = 0; m_nNODV = 0; }
 		~GeoRasterBuffer()
 		{ 
 			if (m_poSRS != 0) OSRRelease(m_poSRS);
 		}
-		bool SetTMSGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy);
+		
 		bool Clip(OGRGeometry* poClipGeom, double dblPixelBuffer = 0);
 		bool Clip(string strVectorFile, double dblPixelOffset = 0);
 	
 		
 		GeoRasterBuffer* BurnVectorMask(OGRGeometry* poClipGeom, double dblPixelOffset = 0);
 		
-		bool SaveGeoRefFile(string strOutput);
-		GDALDataset* CreateInMemGDALDataset(bool bCopyData = true);
+		bool SaveGeoRefFile(string strRasterFile);
 		bool CloneGeoRef(GeoRasterBuffer* poSrcBuffer);
 		OGRSpatialReference* GetSRSRef() { return m_poSRS; };
-		
+		bool SetTMSGeoRef(ITileMatrixSet*  poSRS, int z, int minx, int miny, int maxx, int maxy);
+		bool SetGeoRef(OGRSpatialReference* poSRS, OGREnvelope oEnvp, double dblRes);
+
+
+
+		GDALDataset* CreateInMemGDALDataset(bool bCopyData = true);
 		
 		//OGRMultiPolygon* PolygonizeRange(int nMinValue, int nMaxValue);
 		
@@ -72,6 +86,10 @@ namespace agrigate
 		//bool CalculateContour(int nMinValue, int nMaxValue, OGRGeometry* &poPixelSpaceGeometry);
 		//bool CalculateContours(...);
 	protected:
+
+
+		double* CalcPixelRanks(int nBand = -1);
+
 		
 		//template <typename T> GeoRasterBuffer* CreateMaskBufferByRanges(
 		//	T type,
@@ -97,7 +115,7 @@ namespace agrigate
 		OGRSpatialReference* m_poSRS;
 		double m_dblRes;
 		OGREnvelope m_oEnvp;
-		int m_nNDV;
+		int m_nNODV;
 	};
 
 	class Classifier
