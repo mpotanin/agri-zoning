@@ -76,7 +76,10 @@ namespace agrigate
 
 		poOutputBuffer->CreateBuffer(listNDVIFiles.size(), nWidth, nHeight, 0, GDT_Int16);
 		poOutputBuffer->SetGeoRef(&oBufferSRS, oEnvp, dblPixelRes);
-		GDALDataset* poVrtDS = poOutputBuffer->CreateInMemGDALDataset(false);
+				
+		auto oInMemDS = poOutputBuffer->CreateInMemGDALDataset(false);
+		string strVrtPath = std::get<0>(oInMemDS);
+		GDALDataset* poVrtDS = std::get<1>(oInMemDS);
 		
 		int nCount = 1;
 
@@ -162,6 +165,9 @@ namespace agrigate
 			poOutputBuffer->Clip(poMultiPoly, dblPixelBuffer);
 			delete(poMultiPoly);
 		}
+
+		GDALClose(poVrtDS);
+		VSIUnlink(strVrtPath.c_str());
 
 		return poOutputBuffer;
 		
@@ -385,13 +391,14 @@ namespace agrigate
 	}
 	*/
 
-	GDALDataset* GeoRasterBuffer::CreateInMemGDALDataset(bool bCopyData)
+	tuple<string,GDALDataset*> GeoRasterBuffer::CreateInMemGDALDataset(bool bCopyData)
 	{
 		string strTiffInMem = "/vsimem/tiffinmem_" + GMXString::ConvertIntToString(rand());
 		double padblGeoTransform[6];
-		if (!CalcGeoTransform(padblGeoTransform)) return 0;
+		GDALDataset*	poVrtDS = 0;
+		if (!CalcGeoTransform(padblGeoTransform)) return std::make_tuple("", poVrtDS);
 		
-		GDALDataset*	poVrtDS = (GDALDataset*)GDALCreate(
+		poVrtDS = (GDALDataset*)GDALCreate(
 			GDALGetDriverByName("GTiff"),
 			strTiffInMem.c_str(),
 			x_size_,
@@ -415,7 +422,9 @@ namespace agrigate
 		poVrtDS->SetProjection(pachWKT);
 		OGRFree(pachWKT);
 		
-		return poVrtDS;
+		
+
+		return std::make_tuple(strTiffInMem,poVrtDS);
 	}
 
 	bool GeoRasterBuffer::CalcGeoTransform(double *padblGeoTransform)
@@ -847,9 +856,14 @@ namespace agrigate
 				
 		double padblGeoTransform[6];
 		if (!CalcGeoTransform(padblGeoTransform)) return 0;
-				
-		GDALDataset* poBufferDS = CreateInMemGDALDataset();
-		GDALDataset* poClippedDS = CreateInMemGDALDataset(false);
+		
+		auto oInMemDS = CreateInMemGDALDataset();
+		string strBufferDSVrtPath = std::get<0>(oInMemDS);
+		GDALDataset* poBufferDS = std::get<1>(oInMemDS);
+
+		oInMemDS = CreateInMemGDALDataset(false);
+		string strClippedDSVrtPath = std::get<0>(oInMemDS);
+		GDALDataset* poClippedDS = std::get<1>(oInMemDS);
 
 		GDALWarpOptions *poWarpOptions = GDALCreateWarpOptions();
 		poWarpOptions->papszWarpOptions = 0;
@@ -904,6 +918,8 @@ namespace agrigate
 			x_size_, y_size_, data_type_, num_bands_, 0, 0, 0, 0);
 		GDALClose(poBufferDS);
 		GDALClose(poClippedDS);
+		VSIUnlink(strBufferDSVrtPath.c_str());
+		VSIUnlink(strClippedDSVrtPath.c_str());
 		
 		//ToDoo VSIUnlink: poBufferDS, poClippedDS - need testing
 
@@ -917,36 +933,15 @@ namespace agrigate
 	
 	bool GeoRasterBuffer::SaveGeoRefFile(string strRasterFile)
 	{
-		SaveBufferToFile(strRasterFile);
-		if ((strRasterFile.find(".tif") != string::npos) ||
-			(strRasterFile.find(".TIF") != string::npos))
-		{
-			GDALDataset* poDS = (GDALDataset*)GDALOpen(strRasterFile.c_str(), GA_Update);
-			
-			char* pachWKT;
-			GetSRSRef()->exportToWkt(&pachWKT);
-			poDS->SetProjection(pachWKT);
-			
-			double dblGeotransform[6];
-			dblGeotransform[0] = m_oEnvp.MinX;
-			dblGeotransform[1] = m_dblRes;
-			dblGeotransform[2] = 0;
-			dblGeotransform[3] = m_oEnvp.MaxY;
-			dblGeotransform[4] = 0;
-			dblGeotransform[5] = -m_dblRes;
-			poDS->SetGeoTransform(dblGeotransform);
-			
-			OGRFree(pachWKT);
-			GDALClose(poDS);
-			//char *p_dst_wkt = 0;
-			//p_tile_mset_->GetTilingSRSRef()->exportToWkt(&p_dst_wkt);
-			//p_vrt_ds->SetProjection(p_dst_wkt);
-			//OGRFree(p_src_wkt);
+		double dblGeotransform[6];
+		dblGeotransform[0] = m_oEnvp.MinX;
+		dblGeotransform[1] = m_dblRes;
+		dblGeotransform[2] = 0;
+		dblGeotransform[3] = m_oEnvp.MaxY;
+		dblGeotransform[4] = 0;
+		dblGeotransform[5] = -m_dblRes;
 
-		}
-		else GMXFileSys::WriteWLDFile(strRasterFile, m_oEnvp.MinX, m_oEnvp.MaxY, m_dblRes);
-		
-		return true;
+		return SaveBufferToFile(strRasterFile, 0, GetSRSRef(), dblGeotransform);
 	}
 
 
@@ -954,7 +949,10 @@ namespace agrigate
 	{
 		map<int, OGRMultiPolygon*> mapOutput;
 
-		GDALDataset* poInMemDS = poGeoBuffer->CreateInMemGDALDataset();
+		auto oInMemDS = poGeoBuffer->CreateInMemGDALDataset();
+		string strVrtRasterPath = std::get<0>(oInMemDS);
+		GDALDataset* poInMemDS = std::get<1>(oInMemDS);
+
 				
 		string	strInMemName = ("/vsimem/shpinmem_" + GMXString::ConvertIntToString(rand()));
 		GDALDataset* poInMemSHP = GetGDALDriverManager()->GetDriverByName("ESRI Shapefile")->
@@ -983,6 +981,8 @@ namespace agrigate
 
 
 		GDALClose(poInMemDS);
+		VSIUnlink(strVrtRasterPath.c_str());
+
 		poInMemSHP->DeleteLayer(0);
 		GDALClose(poInMemSHP);
 		VSIUnlink(strInMemName.c_str());

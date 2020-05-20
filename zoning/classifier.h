@@ -68,7 +68,7 @@ namespace agrigate
 
 
 
-		GDALDataset* CreateInMemGDALDataset(bool bCopyData = true);
+		tuple<string,GDALDataset*> CreateInMemGDALDataset(bool bCopyData = true);
 		
 		//OGRMultiPolygon* PolygonizeRange(int nMinValue, int nMaxValue);
 		
